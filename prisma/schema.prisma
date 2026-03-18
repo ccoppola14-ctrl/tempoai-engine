@@ -1,0 +1,142 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Organization {
+  id        String     @id @default(uuid())
+  name      String
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  locations Location[]
+}
+
+model Location {
+  id                String            @id @default(uuid())
+  organizationId    String
+  organization      Organization      @relation(fields: [organizationId], references: [id])
+  name              String
+  address           String
+  lat               Float
+  lng               Float
+  timezone          String            @default("America/New_York")
+  squareMerchantId  String?
+  squareAccessToken String?
+  cloverMerchantId  String?
+  cloverApiToken    String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  menuItems         MenuItem[]
+  orders            Order[]
+  weatherSnapshots  WeatherSnapshot[]
+  aiPatterns        AIPattern[]
+  recommendations   Recommendation[]
+  syncLogs          SyncLog[]
+}
+
+model MenuItem {
+  id           String      @id @default(uuid())
+  locationId   String
+  location     Location    @relation(fields: [locationId], references: [id])
+  squareItemId String?
+  cloverItemId String?
+  name         String
+  category     String
+  price        Float
+  active       Boolean     @default(true)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  orderItems   OrderItem[]
+  aiPatterns   AIPattern[]
+  recommendations Recommendation[]
+
+  @@unique([locationId, squareItemId])
+  @@unique([locationId, cloverItemId])
+}
+
+model Order {
+  id         String      @id @default(uuid())
+  locationId String
+  location   Location    @relation(fields: [locationId], references: [id])
+  squareOrderId String?
+  cloverOrderId String?
+  timestamp  DateTime
+  total      Float
+  itemCount  Int
+  createdAt  DateTime    @default(now())
+  orderItems OrderItem[]
+}
+
+model OrderItem {
+  id         String   @id @default(uuid())
+  orderId    String
+  order      Order    @relation(fields: [orderId], references: [id])
+  menuItemId String
+  menuItem   MenuItem @relation(fields: [menuItemId], references: [id])
+  quantity   Int
+  amount     Float
+}
+
+model WeatherSnapshot {
+  id            String   @id @default(uuid())
+  locationId    String
+  location      Location @relation(fields: [locationId], references: [id])
+  timestamp     DateTime
+  temperature   Float
+  conditions    String
+  precipitation Float
+  humidity      Float
+  windSpeed     Float
+}
+
+model AIPattern {
+  id               String   @id @default(uuid())
+  locationId       String
+  location         Location @relation(fields: [locationId], references: [id])
+  menuItemId       String
+  menuItem         MenuItem @relation(fields: [menuItemId], references: [id])
+  patternType      String
+  triggerCondition String
+  baselineSales    Float
+  conditionSales   Float
+  liftPercent      Float
+  confidence       Float
+  dataPoints       Int
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model Recommendation {
+  id           String    @id @default(uuid())
+  locationId   String
+  location     Location  @relation(fields: [locationId], references: [id])
+  menuItemId   String
+  menuItem     MenuItem  @relation(fields: [menuItemId], references: [id])
+  type         String
+  triggerType  String
+  triggerCondition String
+  currentlyActive  Boolean @default(false)
+  expectedLift     Float
+  confidence       Float
+  dataPoints       Int
+  message      String
+  channels     String
+  status       String    @default("active")
+  appliedAt    DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+model SyncLog {
+  id               String   @id @default(uuid())
+  locationId       String
+  location         Location @relation(fields: [locationId], references: [id])
+  source           String
+  status           String
+  recordsProcessed Int      @default(0)
+  error            String?
+  timestamp        DateTime @default(now())
+}
