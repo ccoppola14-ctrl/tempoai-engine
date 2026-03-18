@@ -6,6 +6,7 @@ import { getMerchant as getCloverMerchant } from '../integrations/clover/client'
 import { syncCloverCatalog, syncCloverOrders, initialCloverSync } from '../integrations/clover/sync';
 import { fetchWeather } from '../integrations/weather/client';
 import { analyzeLocation, analyzeAllLocations } from '../ai/engine';
+import { getDaypart, getDayName } from '../utils/dayparts';
 import { logger } from '../utils/logger';
 
 const router = Router();
@@ -185,6 +186,147 @@ router.post('/recommendations/:id/apply', async (req: Request, res: Response) =>
   });
 
   res.json(recommendation);
+});
+
+// ─── Active Promos ───────────────────────────────────────
+
+function generatePromoText(itemName: string, price: number, triggerType: string, triggerCondition: string): string {
+  const priceStr = `$${price.toFixed(2)}`;
+  switch (triggerType) {
+    case 'temperature':
+      if (triggerCondition === 'temp > 85') return `Beat the heat! Try our refreshing ${itemName} — just ${priceStr}`;
+      if (triggerCondition === 'temp < 60') return `Warm up with our delicious ${itemName} — only ${priceStr}`;
+      return `Perfect weather for our ${itemName} — just ${priceStr}`;
+    case 'weather':
+      if (['rain', 'drizzle', 'thunderstorm'].includes(triggerCondition))
+        return `Rainy day comfort — treat yourself to ${itemName} for ${priceStr}`;
+      if (triggerCondition === 'snow') return `Snow day special — warm up with ${itemName} for ${priceStr}`;
+      if (triggerCondition === 'clear') return `Beautiful day for our ${itemName} — just ${priceStr}`;
+      return `Try our ${itemName} today — only ${priceStr}`;
+    case 'daypart':
+      if (['early_morning', 'breakfast'].includes(triggerCondition))
+        return `Start your morning right with ${itemName} — ${priceStr}`;
+      if (triggerCondition === 'lunch') return `Lunchtime favorite — grab ${itemName} for just ${priceStr}`;
+      if (triggerCondition === 'afternoon') return `Afternoon pick-me-up: ${itemName} for just ${priceStr}`;
+      if (triggerCondition === 'dinner') return `Tonight's pick: ${itemName} — only ${priceStr}`;
+      return `Late night craving? Try our ${itemName} — ${priceStr}`;
+    case 'day_of_week':
+      return `Happy ${triggerCondition}! Enjoy our ${itemName} — just ${priceStr}`;
+    case 'trend':
+      if (triggerCondition === 'trending_up') return `Trending now: ${itemName} — try it for ${priceStr}`;
+      return `Rediscover our ${itemName} — just ${priceStr}`;
+    default:
+      return `Try our ${itemName} — only ${priceStr}`;
+  }
+}
+
+function matchesTrigger(
+  triggerType: string,
+  triggerCondition: string,
+  temperature: number | null,
+  weatherCondition: string | null,
+  currentDaypart: string,
+  currentDayName: string,
+): boolean {
+  switch (triggerType) {
+    case 'temperature': {
+      if (temperature === null) return false;
+      if (triggerCondition === 'temp < 60') return temperature < 60;
+      if (triggerCondition === 'temp 60-75') return temperature >= 60 && temperature < 75;
+      if (triggerCondition === 'temp 75-85') return temperature >= 75 && temperature < 85;
+      if (triggerCondition === 'temp > 85') return temperature >= 85;
+      return false;
+    }
+    case 'weather':
+      return weatherCondition === triggerCondition;
+    case 'daypart':
+      return currentDaypart === triggerCondition;
+    case 'day_of_week':
+      return currentDayName === triggerCondition;
+    case 'trend':
+      return true;
+    default:
+      return false;
+  }
+}
+
+router.get('/active-promos/:locationId', async (req: Request, res: Response) => {
+  const locationId = paramStr(req.params.locationId);
+
+  try {
+    const location = await prisma.location.findUnique({ where: { id: locationId } });
+    if (!location) {
+      res.status(404).json({ error: 'Location not found' });
+      return;
+    }
+
+    // Get latest weather snapshot
+    const latestWeather = await prisma.weatherSnapshot.findFirst({
+      where: { locationId },
+      orderBy: { timestamp: 'desc' },
+    });
+
+    // Current time info
+    const now = new Date();
+    const hour = now.getHours();
+    const dayOfWeekNum = now.getDay();
+    const currentDaypart = getDaypart(hour);
+    const currentDayName = getDayName(dayOfWeekNum);
+
+    const temperature = latestWeather?.temperature ?? null;
+    const weatherCondition = latestWeather?.conditions ?? null;
+
+    // Get all active recommendations for this location
+    const recommendations = await prisma.recommendation.findMany({
+      where: { locationId, status: 'active' },
+      include: { menuItem: true },
+      orderBy: { expectedLift: 'desc' },
+    });
+
+    // Filter to only those whose trigger conditions match right now
+    const matchingRecs = recommendations.filter((rec) =>
+      matchesTrigger(rec.triggerType, rec.triggerCondition, temperature, weatherCondition, currentDaypart, currentDayName)
+    );
+
+    // Top 10 by expectedLift (already sorted desc)
+    const top10 = matchingRecs.slice(0, 10);
+
+    const activePromos = top10.map((rec) => {
+      const channels = JSON.parse(rec.channels) as string[];
+      return {
+        id: rec.id,
+        itemName: rec.menuItem.name,
+        itemPrice: rec.menuItem.price,
+        message: rec.message,
+        expectedLift: rec.expectedLift,
+        channels,
+        triggerType: rec.triggerType,
+        triggerCondition: rec.triggerCondition,
+        promoText: generatePromoText(rec.menuItem.name, rec.menuItem.price, rec.triggerType, rec.triggerCondition),
+      };
+    });
+
+    // Best audio promo: highest lift with "audio" channel
+    const audioPromo = activePromos.find((p) => p.channels.includes('audio')) ?? null;
+
+    res.json({
+      locationId,
+      timestamp: now.toISOString(),
+      conditions: {
+        temperature,
+        weather: weatherCondition,
+        daypart: currentDaypart,
+        dayOfWeek: currentDayName,
+      },
+      activePromos,
+      audioPromo: audioPromo
+        ? { text: audioPromo.promoText, itemName: audioPromo.itemName }
+        : null,
+    });
+  } catch (err) {
+    logger.error('ActivePromos', 'Failed to get active promos', err);
+    res.status(500).json({ error: 'Failed to get active promotions' });
+  }
 });
 
 // ─── Insights ─────────────────────────────────────────────
