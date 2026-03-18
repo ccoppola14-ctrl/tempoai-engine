@@ -4,7 +4,7 @@ services:
     runtime: node
     plan: starter
     buildCommand: npm install && npx prisma generate && npm run build
-    startCommand: npx prisma migrate deploy && npm start
+    startCommand: npx prisma migrate deploy && npx ts-node prisma/seed.ts && npm start
     envVars:
       - key: DATABASE_URL
         value: file:/data/tempoai.db
