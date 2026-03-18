@@ -7,7 +7,7 @@ services:
     startCommand: npx prisma migrate deploy && npm start
     envVars:
       - key: DATABASE_URL
-        value: file:./prisma/dev.db
+        value: file:/data/tempoai.db
       - key: SQUARE_APP_ID
         sync: false
       - key: SQUARE_ACCESS_TOKEN
@@ -22,5 +22,5 @@ services:
         value: production
     disk:
       name: tempoai-data
-      mountPath: /opt/render/project/src/prisma
+      mountPath: /data
       sizeGB: 1
