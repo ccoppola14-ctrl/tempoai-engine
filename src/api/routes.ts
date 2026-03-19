@@ -861,3 +861,129 @@ router.get('/cashier/suggest/:locationId', async (req: Request, res: Response) =
     res.status(500).json({ error: 'Failed to get cashier suggestions' });
   }
 });
+
+// ─── Clover OAuth Flow ───────────────────────────────────
+// This is the proper app-market install flow.
+// Merchant clicks Install → Clover redirects to us with auth code → we exchange for token.
+
+const CLOVER_APP_ID = process.env.CLOVER_APP_ID || '';
+const CLOVER_APP_SECRET = process.env.CLOVER_APP_SECRET || '';
+
+function getCloverOAuthBaseUrl(): string {
+  const env = process.env.CLOVER_ENVIRONMENT || 'sandbox';
+  return env === 'production'
+    ? 'https://www.clover.com'
+    : 'https://sandbox.dev.clover.com';
+}
+
+function getCloverApiBaseUrl(): string {
+  const env = process.env.CLOVER_ENVIRONMENT || 'sandbox';
+  return env === 'production'
+    ? 'https://api.clover.com'
+    : 'https://apisandbox.dev.clover.com';
+}
+
+// Step 1: Redirect merchant to Clover authorization page
+router.get('/auth/clover/connect', (_req: Request, res: Response) => {
+  if (!CLOVER_APP_ID) {
+    res.status(500).json({ error: 'CLOVER_APP_ID not configured' });
+    return;
+  }
+  const redirectUri = `${process.env.ENGINE_URL || 'https://tempoai-engine.onrender.com'}/api/auth/clover/callback`;
+  const authUrl = `${getCloverOAuthBaseUrl()}/oauth/v2/authorize?client_id=${CLOVER_APP_ID}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+  res.redirect(authUrl);
+});
+
+// Step 2: Clover redirects back with merchant_id and code
+router.get('/auth/clover/callback', async (req: Request, res: Response) => {
+  const { merchant_id, code } = req.query;
+
+  if (!code || !merchant_id || typeof code !== 'string' || typeof merchant_id !== 'string') {
+    res.status(400).json({ error: 'Missing merchant_id or authorization code' });
+    return;
+  }
+
+  try {
+    // Exchange code for access token
+    const tokenUrl = `${getCloverApiBaseUrl()}/oauth/v2/token`;
+    const tokenResponse = await fetch(tokenUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_id: CLOVER_APP_ID,
+        client_secret: CLOVER_APP_SECRET,
+        code,
+      }),
+    });
+
+    if (!tokenResponse.ok) {
+      const errorBody = await tokenResponse.text();
+      logger.error('CloverOAuth', `Token exchange failed: ${errorBody}`);
+      res.status(500).json({ error: 'Failed to exchange authorization code' });
+      return;
+    }
+
+    const tokenData = await tokenResponse.json() as { access_token: string };
+    const accessToken = tokenData.access_token;
+
+    logger.info('CloverOAuth', `Got access token for merchant ${merchant_id}`);
+
+    // Fetch merchant details
+    const merchant = await getCloverMerchant(merchant_id, accessToken);
+
+    // Find or create organization
+    let org = await prisma.organization.findFirst();
+    if (!org) {
+      org = await prisma.organization.create({
+        data: { name: merchant.name || 'My Restaurant' },
+      });
+    }
+
+    // Create or update location
+    let location = await prisma.location.findFirst({
+      where: { cloverMerchantId: merchant_id },
+    });
+
+    if (!location) {
+      location = await prisma.location.create({
+        data: {
+          organizationId: org.id,
+          name: merchant.name || 'Clover Location',
+          address: merchant.address
+            ? [merchant.address.address1, merchant.address.city, merchant.address.state]
+                .filter(Boolean)
+                .join(', ')
+            : '',
+          lat: 0,
+          lng: 0,
+          timezone: 'America/New_York',
+          cloverMerchantId: merchant_id,
+          cloverApiToken: accessToken,
+        },
+      });
+    } else {
+      location = await prisma.location.update({
+        where: { id: location.id },
+        data: {
+          cloverApiToken: accessToken,
+          name: merchant.name || location.name,
+        },
+      });
+    }
+
+    logger.info('CloverOAuth', `Onboarded: ${location.name} (${location.id})`);
+
+    // Run initial sync in background (don't block the redirect)
+    initialCloverSync(location.id)
+      .then(() => analyzeLocation(location!.id))
+      .then(() => logger.info('CloverOAuth', `Initial sync + analysis complete for ${location!.name}`))
+      .catch((err) => logger.error('CloverOAuth', `Background sync failed for ${location!.name}`, err));
+
+    // Redirect to dashboard
+    const dashboardUrl = process.env.DASHBOARD_URL || 'https://tempoai-three.vercel.app';
+    res.redirect(`${dashboardUrl}/onboard?success=true&location=${encodeURIComponent(location.name)}`);
+  } catch (err) {
+    logger.error('CloverOAuth', 'OAuth callback failed', err);
+    res.status(500).json({ error: 'OAuth failed', message: err instanceof Error ? err.message : String(err) });
+  }
+});
