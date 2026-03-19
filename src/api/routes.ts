@@ -788,3 +788,76 @@ router.post('/clover/analyze', async (req: Request, res: Response) => {
 });
 
 export default router;
+
+// ─── Cashier Suggestions (Real-Time) ─────────────────────
+// This endpoint powers live cashier recommendations.
+// A Clover app, cashier tablet, or any POS integration hits this
+// to get the top items to suggest RIGHT NOW based on current conditions.
+router.get('/cashier/suggest/:locationId', async (req: Request, res: Response) => {
+  const locationId = paramStr(req.params.locationId);
+
+  try {
+    const location = await prisma.location.findUnique({ where: { id: locationId } });
+    if (!location) {
+      res.status(404).json({ error: 'Location not found' });
+      return;
+    }
+
+    // Get current conditions
+    const latestWeather = await prisma.weatherSnapshot.findFirst({
+      where: { locationId },
+      orderBy: { timestamp: 'desc' },
+    });
+
+    const now = new Date();
+    const hour = now.getHours();
+    const dayOfWeekNum = now.getDay();
+    const currentDaypart = getDaypart(hour);
+    const currentDayName = getDayName(dayOfWeekNum);
+    const temperature = latestWeather?.temperature ?? null;
+    const weatherCondition = latestWeather?.conditions ?? null;
+
+    // Get active recommendations
+    const recommendations = await prisma.recommendation.findMany({
+      where: { locationId, status: 'active' },
+      include: { menuItem: true },
+      orderBy: { expectedLift: 'desc' },
+    });
+
+    // Filter to matching current conditions
+    const matching = recommendations.filter((rec) =>
+      matchesTrigger(rec.triggerType, rec.triggerCondition, temperature, weatherCondition, currentDaypart, currentDayName)
+    );
+
+    // Top 3 suggestions for the cashier
+    const suggestions = matching.slice(0, 3).map((rec, i) => ({
+      rank: i + 1,
+      item: rec.menuItem.name,
+      price: `$${rec.menuItem.price.toFixed(2)}`,
+      reason: rec.message,
+      expectedLift: `+${rec.expectedLift}%`,
+      triggerType: rec.triggerType,
+      triggerCondition: rec.triggerCondition,
+      suggestText: generatePromoText(rec.menuItem.name, rec.menuItem.price, rec.triggerType, rec.triggerCondition),
+    }));
+
+    res.json({
+      locationId,
+      locationName: location.name,
+      timestamp: now.toISOString(),
+      conditions: {
+        temperature,
+        weather: weatherCondition,
+        daypart: currentDaypart,
+        dayOfWeek: currentDayName,
+      },
+      suggestions,
+      cashierPrompt: suggestions.length > 0
+        ? `Suggest: "${suggestions[0].item}" — ${suggestions[0].reason}`
+        : null,
+    });
+  } catch (err) {
+    logger.error('Cashier', 'Failed to get suggestions', err);
+    res.status(500).json({ error: 'Failed to get cashier suggestions' });
+  }
+});

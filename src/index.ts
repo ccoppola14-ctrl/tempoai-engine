@@ -4,7 +4,10 @@ import cors from 'cors';
 import router from './api/routes';
 import { requestLogger, errorHandler } from './api/middleware';
 import { startSyncSchedule } from './integrations/square/sync';
+import { startCloverSyncSchedule } from './integrations/clover/sync';
 import { startWeatherSchedule } from './integrations/weather/client';
+import { analyzeAllLocations } from './ai/engine';
+import cron from 'node-cron';
 import { logger } from './utils/logger';
 
 const app = express();
@@ -37,8 +40,21 @@ app.listen(PORT, () => {
   logger.info('Server', `Demo mode: ${process.env.DEMO_MODE === 'true' ? 'ON' : 'OFF'}`);
 
   // Start scheduled jobs
-  startSyncSchedule();
-  startWeatherSchedule();
+  startSyncSchedule();        // Square sync every 15 min
+  startCloverSyncSchedule();  // Clover sync every 15 min
+  startWeatherSchedule();     // Weather snapshots
+
+  // Re-run AI analysis every hour
+  cron.schedule('0 * * * *', async () => {
+    logger.info('AI', 'Running hourly AI analysis...');
+    try {
+      await analyzeAllLocations();
+      logger.info('AI', 'Hourly analysis complete');
+    } catch (err) {
+      logger.error('AI', 'Hourly analysis failed', err);
+    }
+  });
+  logger.info('AI', 'Hourly AI analysis scheduled');
 });
 
 export default app;
