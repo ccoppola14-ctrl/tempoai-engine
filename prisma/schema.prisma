@@ -140,3 +140,16 @@ model SyncLog {
   error            String?
   timestamp        DateTime @default(now())
 }
+
+model CloverMerchant {
+  id           String    @id @default(uuid())
+  merchantId   String    @unique
+  accessToken  String
+  name         String
+  plan         String    @default("basic")
+  active       Boolean   @default(true)
+  installedAt  DateTime  @default(now())
+  uninstalledAt DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}

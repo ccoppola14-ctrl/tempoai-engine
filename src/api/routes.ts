@@ -866,7 +866,7 @@ router.get('/cashier/suggest/:locationId', async (req: Request, res: Response) =
 // This is the proper app-market install flow.
 // Merchant clicks Install → Clover redirects to us with auth code → we exchange for token.
 
-const CLOVER_APP_ID = process.env.CLOVER_APP_ID || '';
+const CLOVER_APP_ID = process.env.CLOVER_APP_ID || 'j4eb4vp13bmy6';
 const CLOVER_APP_SECRET = process.env.CLOVER_APP_SECRET || '';
 
 function getCloverOAuthBaseUrl(): string {
@@ -971,6 +971,13 @@ router.get('/auth/clover/callback', async (req: Request, res: Response) => {
       });
     }
 
+    // Store in CloverMerchant table for app market tracking
+    await prisma.cloverMerchant.upsert({
+      where: { merchantId: merchant_id },
+      update: { accessToken, name: merchant.name || 'Clover Merchant', active: true },
+      create: { merchantId: merchant_id, accessToken, name: merchant.name || 'Clover Merchant' },
+    });
+
     logger.info('CloverOAuth', `Onboarded: ${location.name} (${location.id})`);
 
     // Run initial sync in background (don't block the redirect)
@@ -986,4 +993,264 @@ router.get('/auth/clover/callback', async (req: Request, res: Response) => {
     logger.error('CloverOAuth', 'OAuth callback failed', err);
     res.status(500).json({ error: 'OAuth failed', message: err instanceof Error ? err.message : String(err) });
   }
+});
+
+// ─── Clover App Market OAuth Callback ────────────────────
+// Dedicated endpoint for Clover App Market redirect URI
+router.get('/clover/oauth/callback', async (req: Request, res: Response) => {
+  const { merchant_id, code, employee_id } = req.query;
+
+  if (!code || !merchant_id || typeof code !== 'string' || typeof merchant_id !== 'string') {
+    res.status(400).json({ error: 'Missing merchant_id or authorization code' });
+    return;
+  }
+
+  try {
+    // Exchange authorization code for access token
+    const tokenUrl = `${getCloverOAuthBaseUrl()}/oauth/token`;
+    const params = new URLSearchParams({
+      client_id: CLOVER_APP_ID,
+      client_secret: CLOVER_APP_SECRET,
+      code,
+    });
+
+    const tokenResponse = await fetch(`${tokenUrl}?${params.toString()}`);
+
+    if (!tokenResponse.ok) {
+      const errorBody = await tokenResponse.text();
+      logger.error('CloverAppMarket', `Token exchange failed: ${errorBody}`);
+      res.status(500).json({ error: 'Failed to exchange authorization code' });
+      return;
+    }
+
+    const tokenData = await tokenResponse.json() as { access_token: string };
+    const accessToken = tokenData.access_token;
+
+    logger.info('CloverAppMarket', `Got access token for merchant ${merchant_id}`);
+
+    // Fetch merchant details from Clover API
+    const merchant = await getCloverMerchant(merchant_id, accessToken);
+
+    // Store in CloverMerchant table
+    await prisma.cloverMerchant.upsert({
+      where: { merchantId: merchant_id },
+      update: { accessToken, name: merchant.name || 'Clover Merchant', active: true },
+      create: { merchantId: merchant_id, accessToken, name: merchant.name || 'Clover Merchant' },
+    });
+
+    // Find or create organization
+    let org = await prisma.organization.findFirst();
+    if (!org) {
+      org = await prisma.organization.create({
+        data: { name: merchant.name || 'My Restaurant' },
+      });
+    }
+
+    // Create or update location
+    let location = await prisma.location.findFirst({
+      where: { cloverMerchantId: merchant_id },
+    });
+
+    if (!location) {
+      location = await prisma.location.create({
+        data: {
+          organizationId: org.id,
+          name: merchant.name || 'Clover Location',
+          address: merchant.address
+            ? [merchant.address.address1, merchant.address.city, merchant.address.state]
+                .filter(Boolean)
+                .join(', ')
+            : '',
+          lat: 0,
+          lng: 0,
+          timezone: 'America/New_York',
+          cloverMerchantId: merchant_id,
+          cloverApiToken: accessToken,
+        },
+      });
+    } else {
+      location = await prisma.location.update({
+        where: { id: location.id },
+        data: {
+          cloverApiToken: accessToken,
+          name: merchant.name || location.name,
+        },
+      });
+    }
+
+    logger.info('CloverAppMarket', `Merchant onboarded: ${location.name} (${merchant_id})`);
+
+    // Trigger initial data sync in background
+    initialCloverSync(location.id)
+      .then(() => analyzeLocation(location!.id))
+      .then(() => logger.info('CloverAppMarket', `Initial sync complete for ${location!.name}`))
+      .catch((err) => logger.error('CloverAppMarket', `Background sync failed`, err));
+
+    // Redirect to dashboard
+    const dashboardUrl = process.env.DASHBOARD_URL || 'https://tempoai-three.vercel.app';
+    res.redirect(`${dashboardUrl}/onboard?success=true&merchant=${merchant_id}&location=${encodeURIComponent(location.name)}`);
+  } catch (err) {
+    logger.error('CloverAppMarket', 'OAuth callback failed', err);
+    res.status(500).json({ error: 'OAuth failed', message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// ─── Clover Webhooks ────────────────────────────────────
+// Handles install/uninstall events from Clover App Market
+router.post('/clover/webhooks', async (req: Request, res: Response) => {
+  try {
+    const { type, merchantId, appId } = req.body as {
+      type?: string;
+      merchantId?: string;
+      appId?: string;
+    };
+
+    if (!type || !merchantId) {
+      res.status(400).json({ error: 'Missing type or merchantId' });
+      return;
+    }
+
+    logger.info('CloverWebhook', `Received ${type} for merchant ${merchantId}`);
+
+    switch (type) {
+      case 'APP_INSTALLED': {
+        // Merchant installed our app — they'll go through OAuth next
+        // Create a placeholder record if it doesn't exist
+        const existing = await prisma.cloverMerchant.findUnique({
+          where: { merchantId },
+        });
+        if (!existing) {
+          await prisma.cloverMerchant.create({
+            data: {
+              merchantId,
+              accessToken: '',
+              name: 'Pending OAuth',
+              active: true,
+            },
+          });
+          logger.info('CloverWebhook', `Created placeholder for merchant ${merchantId}`);
+        }
+        res.json({ received: true, action: 'merchant_created' });
+        break;
+      }
+
+      case 'APP_UNINSTALLED': {
+        // Deactivate merchant
+        const merchant = await prisma.cloverMerchant.findUnique({
+          where: { merchantId },
+        });
+
+        if (merchant) {
+          await prisma.cloverMerchant.update({
+            where: { merchantId },
+            data: { active: false, uninstalledAt: new Date() },
+          });
+
+          // Also deactivate the associated location
+          const location = await prisma.location.findFirst({
+            where: { cloverMerchantId: merchantId },
+          });
+          if (location) {
+            await prisma.location.update({
+              where: { id: location.id },
+              data: { cloverApiToken: null },
+            });
+          }
+
+          logger.info('CloverWebhook', `Deactivated merchant ${merchantId}`);
+        }
+
+        res.json({ received: true, action: 'merchant_deactivated' });
+        break;
+      }
+
+      default:
+        logger.info('CloverWebhook', `Unhandled event type: ${type}`);
+        res.json({ received: true, action: 'ignored' });
+    }
+  } catch (err) {
+    logger.error('CloverWebhook', 'Webhook processing failed', err);
+    res.status(500).json({ error: 'Webhook processing failed' });
+  }
+});
+
+// ─── Clover Merchants (Admin) ───────────────────────────
+router.get('/clover/merchants', async (_req: Request, res: Response) => {
+  const merchants = await prisma.cloverMerchant.findMany({
+    orderBy: { installedAt: 'desc' },
+  });
+
+  res.json({
+    total: merchants.length,
+    active: merchants.filter((m) => m.active).length,
+    merchants: merchants.map((m) => ({
+      id: m.id,
+      merchantId: m.merchantId,
+      name: m.name,
+      plan: m.plan,
+      active: m.active,
+      installedAt: m.installedAt,
+      uninstalledAt: m.uninstalledAt,
+    })),
+  });
+});
+
+// ─── Clover Merchant Status ─────────────────────────────
+router.get('/clover/merchants/:merchantId/status', async (req: Request, res: Response) => {
+  const merchantId = paramStr(req.params.merchantId);
+
+  const merchant = await prisma.cloverMerchant.findUnique({
+    where: { merchantId },
+  });
+
+  if (!merchant) {
+    res.status(404).json({ error: 'Merchant not found' });
+    return;
+  }
+
+  // Find associated location
+  const location = await prisma.location.findFirst({
+    where: { cloverMerchantId: merchantId },
+  });
+
+  // Get latest sync logs
+  const recentSyncs = location
+    ? await prisma.syncLog.findMany({
+        where: { locationId: location.id, source: { startsWith: 'clover' } },
+        orderBy: { timestamp: 'desc' },
+        take: 5,
+      })
+    : [];
+
+  // Get counts
+  const counts = location
+    ? await prisma.location.findUnique({
+        where: { id: location.id },
+        include: {
+          _count: { select: { orders: true, menuItems: true, recommendations: true } },
+        },
+      })
+    : null;
+
+  res.json({
+    merchant: {
+      id: merchant.id,
+      merchantId: merchant.merchantId,
+      name: merchant.name,
+      plan: merchant.plan,
+      active: merchant.active,
+      installedAt: merchant.installedAt,
+    },
+    location: location
+      ? {
+          id: location.id,
+          name: location.name,
+          address: location.address,
+          orders: counts?._count.orders ?? 0,
+          menuItems: counts?._count.menuItems ?? 0,
+          recommendations: counts?._count.recommendations ?? 0,
+        }
+      : null,
+    recentSyncs,
+  });
 });
