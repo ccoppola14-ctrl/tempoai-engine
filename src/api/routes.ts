@@ -9,8 +9,12 @@ import { fetchWeather } from '../integrations/weather/client';
 import { analyzeLocation, analyzeAllLocations } from '../ai/engine';
 import { getDaypart, getDayName } from '../utils/dayparts';
 import { logger } from '../utils/logger';
+import billingRouter from './billing';
 
 const router = Router();
+
+// ─── Billing ──────────────────────────────────────────────
+router.use('/billing', billingRouter);
 
 function paramStr(val: string | string[] | undefined): string {
   return Array.isArray(val) ? val[0] : val ?? '';
