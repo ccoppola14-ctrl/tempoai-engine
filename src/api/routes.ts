@@ -1,7 +1,8 @@
 import { Router, type Request, type Response } from 'express';
 import prisma from '../db/client';
-import { getOAuthUrl, exchangeOAuthCode, listLocations as listSquareLocations } from '../integrations/square/client';
+import { getOAuthUrl, exchangeOAuthCode, listLocations as listSquareLocations, listCatalog } from '../integrations/square/client';
 import { syncLocationCatalog, syncLocationOrders, syncAllLocations, initialSync } from '../integrations/square/sync';
+import { snapshotWeather } from '../integrations/weather/client';
 import { getMerchant as getCloverMerchant } from '../integrations/clover/client';
 import { syncCloverCatalog, syncCloverOrders, initialCloverSync } from '../integrations/clover/sync';
 import { fetchWeather } from '../integrations/weather/client';
@@ -48,6 +49,277 @@ router.get('/auth/square/callback', async (req: Request, res: Response) => {
     logger.error('Auth', 'Square OAuth callback failed', err);
     res.status(500).json({ error: 'OAuth failed' });
   }
+});
+
+// ─── Square OAuth Production Flow ─────────────────────────
+
+// GET /square/oauth/authorize — redirects merchant to Square's OAuth page
+router.get('/square/oauth/authorize', (req: Request, res: Response) => {
+  const redirectUri = req.query.redirect_uri as string | undefined;
+  const callbackUrl = `${process.env.ENGINE_URL || 'https://tempoai-engine.onrender.com'}/api/square/oauth/callback`;
+
+  // Store the dashboard redirect_uri so we can send the merchant back after OAuth
+  const state = redirectUri ? Buffer.from(redirectUri).toString('base64') : '';
+
+  const appId = process.env.SQUARE_APP_ID;
+  const baseUrl =
+    process.env.SQUARE_ENVIRONMENT === 'production'
+      ? 'https://connect.squareup.com'
+      : 'https://connect.squareupsandbox.com';
+  const scopes = [
+    'MERCHANT_PROFILE_READ',
+    'ORDERS_READ',
+    'ITEMS_READ',
+    'INVENTORY_READ',
+  ].join('+');
+
+  const authUrl = `${baseUrl}/oauth2/authorize?client_id=${appId}&scope=${scopes}&session=false&state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(callbackUrl)}`;
+  res.redirect(authUrl);
+});
+
+// GET /square/oauth/callback — handles OAuth redirect from Square
+router.get('/square/oauth/callback', async (req: Request, res: Response) => {
+  const { code, state } = req.query;
+  if (!code || typeof code !== 'string') {
+    res.status(400).json({ error: 'Missing authorization code' });
+    return;
+  }
+
+  try {
+    const callbackUrl = `${process.env.ENGINE_URL || 'https://tempoai-engine.onrender.com'}/api/square/oauth/callback`;
+    const tokens = await exchangeOAuthCode(code, callbackUrl);
+
+    logger.info('SquareOAuth', `Got tokens for merchant ${tokens.merchantId}`);
+
+    // Fetch merchant locations from Square
+    const squareLocations = await listSquareLocations(tokens.accessToken);
+
+    // Store SquareMerchant record
+    await prisma.squareMerchant.upsert({
+      where: { merchantId: tokens.merchantId },
+      update: {
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        expiresAt: tokens.expiresAt,
+        locations: JSON.stringify(squareLocations.map((l) => ({ id: l.id, name: l.name }))),
+        active: true,
+      },
+      create: {
+        merchantId: tokens.merchantId,
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        expiresAt: tokens.expiresAt,
+        name: squareLocations[0]?.businessName ?? 'Square Merchant',
+        locations: JSON.stringify(squareLocations.map((l) => ({ id: l.id, name: l.name }))),
+      },
+    });
+
+    // Find or create organization
+    let org = await prisma.organization.findFirst();
+    if (!org) {
+      org = await prisma.organization.create({
+        data: { name: squareLocations[0]?.businessName ?? 'My Restaurant' },
+      });
+    }
+
+    // Create Location records for each Square location
+    const createdLocationIds: string[] = [];
+    for (const sl of squareLocations) {
+      let location = await prisma.location.findFirst({
+        where: { squareMerchantId: sl.id },
+      });
+
+      const addr = sl.address;
+      const addressStr = addr
+        ? [addr.addressLine1, addr.locality, addr.administrativeDistrictLevel1].filter(Boolean).join(', ')
+        : '';
+      const lat = sl.coordinates?.latitude ?? 0;
+      const lng = sl.coordinates?.longitude ?? 0;
+
+      if (!location) {
+        location = await prisma.location.create({
+          data: {
+            organizationId: org.id,
+            name: sl.name ?? sl.businessName ?? 'Square Location',
+            address: addressStr,
+            lat,
+            lng,
+            timezone: sl.timezone ?? 'America/New_York',
+            squareMerchantId: sl.id,
+            squareAccessToken: tokens.accessToken,
+          },
+        });
+      } else {
+        location = await prisma.location.update({
+          where: { id: location.id },
+          data: {
+            squareAccessToken: tokens.accessToken,
+            name: sl.name ?? location.name,
+            address: addressStr || location.address,
+            lat: lat || location.lat,
+            lng: lng || location.lng,
+          },
+        });
+      }
+
+      createdLocationIds.push(location.id);
+    }
+
+    // Trigger initial sync for all locations in background
+    for (const locId of createdLocationIds) {
+      initialSync(locId)
+        .then(() => snapshotWeather(locId))
+        .then(() => analyzeLocation(locId))
+        .then(() => logger.info('SquareOAuth', `Initial sync + analysis complete for location ${locId}`))
+        .catch((err) => logger.error('SquareOAuth', `Background sync failed for ${locId}`, err));
+    }
+
+    // Redirect back to dashboard
+    let dashboardRedirect = process.env.DASHBOARD_URL || 'https://tempoai-three.vercel.app';
+    if (state && typeof state === 'string') {
+      try {
+        dashboardRedirect = Buffer.from(state, 'base64').toString('utf-8');
+      } catch {
+        // Use default
+      }
+    }
+    const merchantParam = encodeURIComponent(tokens.merchantId);
+    res.redirect(`${dashboardRedirect}?merchantId=${merchantParam}`);
+  } catch (err) {
+    logger.error('SquareOAuth', 'OAuth callback failed', err);
+    const dashboardUrl = process.env.DASHBOARD_URL || 'https://tempoai-three.vercel.app';
+    res.redirect(`${dashboardUrl}/onboard?error=oauth_failed`);
+  }
+});
+
+// GET /square/merchants — list connected Square merchants
+router.get('/square/merchants', async (_req: Request, res: Response) => {
+  const merchants = await prisma.squareMerchant.findMany({
+    orderBy: { installedAt: 'desc' },
+  });
+
+  res.json({
+    total: merchants.length,
+    active: merchants.filter((m) => m.active).length,
+    merchants: merchants.map((m) => ({
+      id: m.id,
+      merchantId: m.merchantId,
+      name: m.name,
+      plan: m.plan,
+      active: m.active,
+      locations: JSON.parse(m.locations),
+      installedAt: m.installedAt,
+    })),
+  });
+});
+
+// GET /square/merchants/:merchantId/status — merchant connection status
+router.get('/square/merchants/:merchantId/status', async (req: Request, res: Response) => {
+  const merchantId = paramStr(req.params.merchantId);
+
+  const merchant = await prisma.squareMerchant.findUnique({
+    where: { merchantId },
+  });
+
+  if (!merchant) {
+    res.status(404).json({ error: 'Merchant not found' });
+    return;
+  }
+
+  // Find associated locations
+  const locations = await prisma.location.findMany({
+    where: { squareMerchantId: { in: JSON.parse(merchant.locations).map((l: { id: string }) => l.id) } },
+    include: {
+      _count: { select: { orders: true, menuItems: true, recommendations: true, weatherSnapshots: true } },
+    },
+  });
+
+  // Get latest sync logs
+  const recentSyncs = locations.length > 0
+    ? await prisma.syncLog.findMany({
+        where: { locationId: { in: locations.map((l) => l.id) }, source: { startsWith: 'square' } },
+        orderBy: { timestamp: 'desc' },
+        take: 10,
+      })
+    : [];
+
+  res.json({
+    merchant: {
+      id: merchant.id,
+      merchantId: merchant.merchantId,
+      name: merchant.name,
+      plan: merchant.plan,
+      active: merchant.active,
+      installedAt: merchant.installedAt,
+      expiresAt: merchant.expiresAt,
+    },
+    locations: locations.map((l) => ({
+      id: l.id,
+      name: l.name,
+      address: l.address,
+      orders: l._count.orders,
+      menuItems: l._count.menuItems,
+      recommendations: l._count.recommendations,
+      weatherSnapshots: l._count.weatherSnapshots,
+    })),
+    recentSyncs,
+  });
+});
+
+// ─── Onboarding Status ───────────────────────────────────
+router.get('/onboard/status/:merchantId', async (req: Request, res: Response) => {
+  const merchantId = paramStr(req.params.merchantId);
+
+  // Check SquareMerchant first, then CloverMerchant
+  const squareMerchant = await prisma.squareMerchant.findUnique({ where: { merchantId } });
+  const cloverMerchant = !squareMerchant
+    ? await prisma.cloverMerchant.findUnique({ where: { merchantId } })
+    : null;
+
+  if (!squareMerchant && !cloverMerchant) {
+    res.status(404).json({ error: 'Merchant not found' });
+    return;
+  }
+
+  // Find locations for this merchant
+  const locations = squareMerchant
+    ? await prisma.location.findMany({
+        where: { squareMerchantId: { in: JSON.parse(squareMerchant.locations).map((l: { id: string }) => l.id) } },
+        include: {
+          _count: { select: { orders: true, menuItems: true, weatherSnapshots: true, recommendations: true } },
+        },
+      })
+    : await prisma.location.findMany({
+        where: { cloverMerchantId: merchantId },
+        include: {
+          _count: { select: { orders: true, menuItems: true, weatherSnapshots: true, recommendations: true } },
+        },
+      });
+
+  const hasLocations = locations.length > 0;
+  const hasMenu = locations.some((l) => l._count.menuItems > 0);
+  const hasOrders = locations.some((l) => l._count.orders > 0);
+  const hasWeather = locations.some((l) => l._count.weatherSnapshots > 0);
+  const ready = hasLocations && hasMenu && hasOrders;
+
+  res.json({
+    merchantId,
+    source: squareMerchant ? 'square' : 'clover',
+    locations: hasLocations,
+    menu: hasMenu,
+    orders: hasOrders,
+    weather: hasWeather,
+    ready,
+    locationCount: locations.length,
+    details: locations.map((l) => ({
+      id: l.id,
+      name: l.name,
+      menuItems: l._count.menuItems,
+      orders: l._count.orders,
+      weatherSnapshots: l._count.weatherSnapshots,
+      recommendations: l._count.recommendations,
+    })),
+  });
 });
 
 // ─── Locations ────────────────────────────────────────────

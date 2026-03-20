@@ -153,3 +153,19 @@ model CloverMerchant {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 }
+
+model SquareMerchant {
+  id           String    @id @default(uuid())
+  merchantId   String    @unique
+  accessToken  String
+  refreshToken String    @default("")
+  expiresAt    DateTime?
+  name         String
+  email        String    @default("")
+  locations    String    @default("[]")
+  plan         String    @default("basic")
+  active       Boolean   @default(true)
+  installedAt  DateTime  @default(now())
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
