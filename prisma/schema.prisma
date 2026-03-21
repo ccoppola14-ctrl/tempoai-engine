@@ -35,6 +35,9 @@ model Location {
   aiPatterns        AIPattern[]
   recommendations   Recommendation[]
   syncLogs          SyncLog[]
+  alerts            Alert[]
+  dailySummaries    DailySummary[]
+  contactEmail      String?
 }
 
 model MenuItem {
@@ -176,4 +179,36 @@ model SquareMerchant {
   installedAt           DateTime  @default(now())
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
+}
+
+model Alert {
+  id             String    @id @default(uuid())
+  locationId     String
+  location       Location  @relation(fields: [locationId], references: [id])
+  type           String
+  severity       String
+  title          String
+  message        String
+  data           String    @default("{}")
+  createdAt      DateTime  @default(now())
+  acknowledgedAt DateTime?
+}
+
+model DailySummary {
+  id              String   @id @default(uuid())
+  locationId      String
+  location        Location @relation(fields: [locationId], references: [id])
+  date            String
+  totalSales      Float
+  orderCount      Int
+  topItems        String
+  laborCostPct    Float?
+  prevWeekSales   Float?
+  prevWeekOrders  Int?
+  changePercent   Float?
+  weatherNote     String?
+  summary         String
+  createdAt       DateTime @default(now())
+
+  @@unique([locationId, date])
 }

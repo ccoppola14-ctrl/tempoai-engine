@@ -15,6 +15,8 @@ const engine_1 = require("../ai/engine");
 const dayparts_1 = require("../utils/dayparts");
 const logger_1 = require("../utils/logger");
 const billing_1 = __importDefault(require("./billing"));
+const daily_summary_1 = require("../services/daily-summary");
+const alerts_1 = require("../services/alerts");
 const router = (0, express_1.Router)();
 // ─── Billing ──────────────────────────────────────────────
 router.use('/billing', billing_1.default);
@@ -1360,5 +1362,79 @@ router.get('/clover/merchants/:merchantId/status', async (req, res) => {
             : null,
         recentSyncs,
     });
+});
+// ─── Daily Summary ───────────────────────────────────────
+// POST /api/reports/daily-summary — generate a daily summary for a location
+router.post('/reports/daily-summary', async (req, res) => {
+    const { locationId, date } = req.body;
+    if (!locationId) {
+        res.status(400).json({ error: 'locationId is required' });
+        return;
+    }
+    try {
+        const summaryDate = date ? new Date(date) : new Date();
+        const summary = await (0, daily_summary_1.generateDailySummary)(locationId, summaryDate);
+        res.json(summary);
+    }
+    catch (err) {
+        logger_1.logger.error('Reports', 'Failed to generate daily summary', err);
+        res.status(500).json({ error: 'Failed to generate summary', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// GET /api/reports/daily-summary/:locationId — retrieve the latest summary
+router.get('/reports/daily-summary/:locationId', async (req, res) => {
+    const locationId = paramStr(req.params.locationId);
+    try {
+        const summary = await client_1.default.dailySummary.findFirst({
+            where: { locationId },
+            orderBy: { date: 'desc' },
+        });
+        if (!summary) {
+            res.status(404).json({ error: 'No summary found for this location' });
+            return;
+        }
+        res.json({
+            ...summary,
+            topItems: JSON.parse(summary.topItems),
+        });
+    }
+    catch (err) {
+        logger_1.logger.error('Reports', 'Failed to retrieve daily summary', err);
+        res.status(500).json({ error: 'Failed to retrieve summary', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// ─── Smart Alerts ────────────────────────────────────────
+// GET /api/alerts/:locationId — get active alerts for a location
+router.get('/alerts/:locationId', async (req, res) => {
+    const locationId = paramStr(req.params.locationId);
+    try {
+        // Run alert evaluation first to ensure alerts are current
+        await (0, alerts_1.evaluateAlerts)(locationId);
+        const alerts = await (0, alerts_1.getActiveAlerts)(locationId);
+        res.json({
+            locationId,
+            alertCount: alerts.length,
+            alerts: alerts.map(a => ({
+                ...a,
+                data: JSON.parse(a.data),
+            })),
+        });
+    }
+    catch (err) {
+        logger_1.logger.error('Alerts', 'Failed to get alerts', err);
+        res.status(500).json({ error: 'Failed to retrieve alerts', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// POST /api/alerts/:id/acknowledge — dismiss an alert
+router.post('/alerts/:id/acknowledge', async (req, res) => {
+    const alertId = paramStr(req.params.id);
+    try {
+        const alert = await (0, alerts_1.acknowledgeAlert)(alertId);
+        res.json({ success: true, alert: { ...alert, data: JSON.parse(alert.data) } });
+    }
+    catch (err) {
+        logger_1.logger.error('Alerts', 'Failed to acknowledge alert', err);
+        res.status(500).json({ error: 'Failed to acknowledge alert', message: err instanceof Error ? err.message : String(err) });
+    }
 });
 //# sourceMappingURL=routes.js.map

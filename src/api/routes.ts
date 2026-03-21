@@ -10,6 +10,8 @@ import { analyzeLocation, analyzeAllLocations } from '../ai/engine';
 import { getDaypart, getDayName } from '../utils/dayparts';
 import { logger } from '../utils/logger';
 import billingRouter from './billing';
+import { generateDailySummary } from '../services/daily-summary';
+import { getActiveAlerts, acknowledgeAlert, evaluateAlerts } from '../services/alerts';
 
 const router = Router();
 
@@ -1529,4 +1531,85 @@ router.get('/clover/merchants/:merchantId/status', async (req: Request, res: Res
       : null,
     recentSyncs,
   });
+});
+
+// ─── Daily Summary ───────────────────────────────────────
+// POST /api/reports/daily-summary — generate a daily summary for a location
+router.post('/reports/daily-summary', async (req: Request, res: Response) => {
+  const { locationId, date } = req.body as { locationId?: string; date?: string };
+  if (!locationId) {
+    res.status(400).json({ error: 'locationId is required' });
+    return;
+  }
+
+  try {
+    const summaryDate = date ? new Date(date) : new Date();
+    const summary = await generateDailySummary(locationId, summaryDate);
+    res.json(summary);
+  } catch (err) {
+    logger.error('Reports', 'Failed to generate daily summary', err);
+    res.status(500).json({ error: 'Failed to generate summary', message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// GET /api/reports/daily-summary/:locationId — retrieve the latest summary
+router.get('/reports/daily-summary/:locationId', async (req: Request, res: Response) => {
+  const locationId = paramStr(req.params.locationId);
+
+  try {
+    const summary = await prisma.dailySummary.findFirst({
+      where: { locationId },
+      orderBy: { date: 'desc' },
+    });
+
+    if (!summary) {
+      res.status(404).json({ error: 'No summary found for this location' });
+      return;
+    }
+
+    res.json({
+      ...summary,
+      topItems: JSON.parse(summary.topItems),
+    });
+  } catch (err) {
+    logger.error('Reports', 'Failed to retrieve daily summary', err);
+    res.status(500).json({ error: 'Failed to retrieve summary', message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// ─── Smart Alerts ────────────────────────────────────────
+// GET /api/alerts/:locationId — get active alerts for a location
+router.get('/alerts/:locationId', async (req: Request, res: Response) => {
+  const locationId = paramStr(req.params.locationId);
+
+  try {
+    // Run alert evaluation first to ensure alerts are current
+    await evaluateAlerts(locationId);
+
+    const alerts = await getActiveAlerts(locationId);
+    res.json({
+      locationId,
+      alertCount: alerts.length,
+      alerts: alerts.map(a => ({
+        ...a,
+        data: JSON.parse(a.data),
+      })),
+    });
+  } catch (err) {
+    logger.error('Alerts', 'Failed to get alerts', err);
+    res.status(500).json({ error: 'Failed to retrieve alerts', message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// POST /api/alerts/:id/acknowledge — dismiss an alert
+router.post('/alerts/:id/acknowledge', async (req: Request, res: Response) => {
+  const alertId = paramStr(req.params.id);
+
+  try {
+    const alert = await acknowledgeAlert(alertId);
+    res.json({ success: true, alert: { ...alert, data: JSON.parse(alert.data) } });
+  } catch (err) {
+    logger.error('Alerts', 'Failed to acknowledge alert', err);
+    res.status(500).json({ error: 'Failed to acknowledge alert', message: err instanceof Error ? err.message : String(err) });
+  }
 });

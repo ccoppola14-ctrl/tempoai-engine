@@ -12,6 +12,8 @@ const sync_1 = require("./integrations/square/sync");
 const sync_2 = require("./integrations/clover/sync");
 const client_1 = require("./integrations/weather/client");
 const engine_1 = require("./ai/engine");
+const daily_summary_1 = require("./services/daily-summary");
+const alerts_1 = require("./services/alerts");
 const node_cron_1 = __importDefault(require("node-cron"));
 const logger_1 = require("./utils/logger");
 const app = (0, express_1.default)();
@@ -54,6 +56,19 @@ app.listen(PORT, () => {
         }
     });
     logger_1.logger.info('AI', 'Hourly AI analysis scheduled');
+    // Daily summary at 6 AM every day
+    node_cron_1.default.schedule('0 6 * * *', async () => {
+        logger_1.logger.info('DailySummary', 'Running daily summary generation...');
+        try {
+            await (0, daily_summary_1.generateAllDailySummaries)();
+            await (0, alerts_1.evaluateAllAlerts)();
+            logger_1.logger.info('DailySummary', 'Daily summaries and alerts complete');
+        }
+        catch (err) {
+            logger_1.logger.error('DailySummary', 'Daily summary generation failed', err);
+        }
+    });
+    logger_1.logger.info('DailySummary', 'Daily summary scheduled for 6 AM');
 });
 exports.default = app;
 //# sourceMappingURL=index.js.map

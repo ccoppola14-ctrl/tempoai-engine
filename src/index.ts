@@ -7,6 +7,8 @@ import { startSyncSchedule } from './integrations/square/sync';
 import { startCloverSyncSchedule } from './integrations/clover/sync';
 import { startWeatherSchedule } from './integrations/weather/client';
 import { analyzeAllLocations } from './ai/engine';
+import { generateAllDailySummaries } from './services/daily-summary';
+import { evaluateAllAlerts } from './services/alerts';
 import cron from 'node-cron';
 import { logger } from './utils/logger';
 
@@ -55,6 +57,19 @@ app.listen(PORT, () => {
     }
   });
   logger.info('AI', 'Hourly AI analysis scheduled');
+
+  // Daily summary at 6 AM every day
+  cron.schedule('0 6 * * *', async () => {
+    logger.info('DailySummary', 'Running daily summary generation...');
+    try {
+      await generateAllDailySummaries();
+      await evaluateAllAlerts();
+      logger.info('DailySummary', 'Daily summaries and alerts complete');
+    } catch (err) {
+      logger.error('DailySummary', 'Daily summary generation failed', err);
+    }
+  });
+  logger.info('DailySummary', 'Daily summary scheduled for 6 AM');
 });
 
 export default app;
