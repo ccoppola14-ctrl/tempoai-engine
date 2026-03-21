@@ -1,13 +1,13 @@
 import prisma from '../db/client';
 import { logger } from '../utils/logger';
 
-interface TopItem {
+export interface TopItem {
   name: string;
   quantity: number;
   revenue: number;
 }
 
-interface SummaryData {
+export interface SummaryData {
   locationId: string;
   locationName: string;
   date: string;

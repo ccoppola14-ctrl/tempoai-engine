@@ -1,9 +1,9 @@
-interface TopItem {
+export interface TopItem {
     name: string;
     quantity: number;
     revenue: number;
 }
-interface SummaryData {
+export interface SummaryData {
     locationId: string;
     locationName: string;
     date: string;
@@ -18,5 +18,4 @@ interface SummaryData {
 }
 export declare function generateDailySummary(locationId: string, date?: Date): Promise<SummaryData>;
 export declare function generateAllDailySummaries(date?: Date): Promise<void>;
-export {};
 //# sourceMappingURL=daily-summary.d.ts.map

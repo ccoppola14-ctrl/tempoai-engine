@@ -20,6 +20,7 @@ const alerts_1 = require("../services/alerts");
 const forecasting_1 = require("../services/forecasting");
 const food_cost_1 = require("../services/food-cost");
 const reviews_1 = require("../services/reviews");
+const email_1 = require("../services/email");
 const router = (0, express_1.Router)();
 // ─── Billing ──────────────────────────────────────────────
 router.use('/billing', billing_1.default);
@@ -1530,6 +1531,38 @@ router.post('/alerts/:id/acknowledge', async (req, res) => {
     catch (err) {
         logger_1.logger.error('Alerts', 'Failed to acknowledge alert', err);
         res.status(500).json({ error: 'Failed to acknowledge alert', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// ─── Email Digest ─────────────────────────────────────────
+// POST /api/email/test-digest — send a test daily digest email
+router.post('/email/test-digest', async (req, res) => {
+    const { to, locationId } = req.body;
+    if (!to || typeof to !== 'string') {
+        res.status(400).json({ error: 'Missing required field: to (email address)' });
+        return;
+    }
+    try {
+        let summary;
+        let locationName;
+        if (locationId) {
+            summary = await (0, daily_summary_1.generateDailySummary)(locationId);
+            locationName = summary.locationName;
+        }
+        else {
+            summary = (0, email_1.buildMockSummary)();
+            locationName = summary.locationName;
+        }
+        const result = await (0, email_1.sendDailySummary)(to, summary, locationName);
+        if (result.success) {
+            res.json({ success: true, emailId: result.id, summary });
+        }
+        else {
+            res.status(502).json({ success: false, error: result.error, summary });
+        }
+    }
+    catch (err) {
+        logger_1.logger.error('Email', 'Failed to send test digest', err);
+        res.status(500).json({ error: 'Failed to send test digest', message: err instanceof Error ? err.message : String(err) });
     }
 });
 //# sourceMappingURL=routes.js.map

@@ -15,6 +15,7 @@ import { getActiveAlerts, acknowledgeAlert, evaluateAlerts } from '../services/a
 import { generateForecast } from '../services/forecasting';
 import { upsertIngredientCosts, getFoodCostAnalysis, getFoodCostSummary } from '../services/food-cost';
 import { getReviews, generateDraftResponse } from '../services/reviews';
+import { sendDailySummary, buildMockSummary } from '../services/email';
 
 const router = Router();
 
@@ -1714,5 +1715,40 @@ router.post('/alerts/:id/acknowledge', async (req: Request, res: Response) => {
   } catch (err) {
     logger.error('Alerts', 'Failed to acknowledge alert', err);
     res.status(500).json({ error: 'Failed to acknowledge alert', message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// ─── Email Digest ─────────────────────────────────────────
+// POST /api/email/test-digest — send a test daily digest email
+router.post('/email/test-digest', async (req: Request, res: Response) => {
+  const { to, locationId } = req.body;
+
+  if (!to || typeof to !== 'string') {
+    res.status(400).json({ error: 'Missing required field: to (email address)' });
+    return;
+  }
+
+  try {
+    let summary;
+    let locationName: string;
+
+    if (locationId) {
+      summary = await generateDailySummary(locationId);
+      locationName = summary.locationName;
+    } else {
+      summary = buildMockSummary();
+      locationName = summary.locationName;
+    }
+
+    const result = await sendDailySummary(to, summary, locationName);
+
+    if (result.success) {
+      res.json({ success: true, emailId: result.id, summary });
+    } else {
+      res.status(502).json({ success: false, error: result.error, summary });
+    }
+  } catch (err) {
+    logger.error('Email', 'Failed to send test digest', err);
+    res.status(500).json({ error: 'Failed to send test digest', message: err instanceof Error ? err.message : String(err) });
   }
 });

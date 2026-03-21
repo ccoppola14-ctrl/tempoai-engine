@@ -7,8 +7,9 @@ import { startSyncSchedule } from './integrations/square/sync';
 import { startCloverSyncSchedule } from './integrations/clover/sync';
 import { startWeatherSchedule } from './integrations/weather/client';
 import { analyzeAllLocations } from './ai/engine';
-import { generateAllDailySummaries } from './services/daily-summary';
+import { generateAllDailySummaries, generateDailySummary } from './services/daily-summary';
 import { evaluateAllAlerts } from './services/alerts';
+import { sendDailySummary } from './services/email';
 import cron from 'node-cron';
 import { logger } from './utils/logger';
 
@@ -58,13 +59,31 @@ app.listen(PORT, () => {
   });
   logger.info('AI', 'Hourly AI analysis scheduled');
 
-  // Daily summary at 6 AM every day
+  // Daily summary + email digest at 6 AM every day
   cron.schedule('0 6 * * *', async () => {
     logger.info('DailySummary', 'Running daily summary generation...');
     try {
       await generateAllDailySummaries();
       await evaluateAllAlerts();
       logger.info('DailySummary', 'Daily summaries and alerts complete');
+
+      // Send email digests to merchants with emails on file
+      const { default: prisma } = await import('./db/client');
+      const locations = await prisma.location.findMany();
+      for (const location of locations) {
+        try {
+          const merchant = location.squareMerchantId
+            ? await prisma.squareMerchant.findUnique({ where: { merchantId: location.squareMerchantId } })
+            : null;
+          if (merchant?.email) {
+            const summary = await generateDailySummary(location.id);
+            await sendDailySummary(merchant.email, summary, location.name);
+          }
+        } catch (emailErr) {
+          logger.error('Email', `Failed to send digest for ${location.name}`, emailErr);
+        }
+      }
+      logger.info('Email', 'Daily digest emails sent');
     } catch (err) {
       logger.error('DailySummary', 'Daily summary generation failed', err);
     }
