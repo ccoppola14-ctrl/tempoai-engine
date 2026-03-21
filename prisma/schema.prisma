@@ -212,3 +212,37 @@ model DailySummary {
 
   @@unique([locationId, date])
 }
+
+model Forecast {
+  id              String   @id @default(uuid())
+  locationId      String
+  date            String
+  predictedSales  Float
+  predictedOrders Int
+  confidence      Float
+  factors         String   @default("{}")
+  createdAt       DateTime @default(now())
+}
+
+model IngredientCost {
+  id             String   @id @default(uuid())
+  locationId     String
+  menuItemId     String
+  ingredientName String
+  cost           Float
+  unit           String
+  quantity       Float
+  updatedAt      DateTime @updatedAt
+}
+
+model Review {
+  id           String    @id @default(uuid())
+  locationId   String
+  platform     String
+  rating       Int
+  reviewerName String
+  reviewText   String
+  responseText String?
+  respondedAt  DateTime?
+  createdAt    DateTime  @default(now())
+}

@@ -17,6 +17,9 @@ const logger_1 = require("../utils/logger");
 const billing_1 = __importDefault(require("./billing"));
 const daily_summary_1 = require("../services/daily-summary");
 const alerts_1 = require("../services/alerts");
+const forecasting_1 = require("../services/forecasting");
+const food_cost_1 = require("../services/food-cost");
+const reviews_1 = require("../services/reviews");
 const router = (0, express_1.Router)();
 // ─── Billing ──────────────────────────────────────────────
 router.use('/billing', billing_1.default);
@@ -955,6 +958,98 @@ router.post('/clover/analyze', async (req, res) => {
     catch (err) {
         logger_1.logger.error('AI', 'Clover analysis failed', err);
         res.status(500).json({ error: 'Analysis failed', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// ─── AI Sales Forecasting ────────────────────────────────
+// GET /api/forecast/:locationId — generate 7-day sales forecast
+router.get('/forecast/:locationId', async (req, res) => {
+    const locationId = paramStr(req.params.locationId);
+    try {
+        const forecast = await (0, forecasting_1.generateForecast)(locationId);
+        res.json({
+            locationId,
+            generatedAt: new Date().toISOString(),
+            days: forecast,
+        });
+    }
+    catch (err) {
+        logger_1.logger.error('Forecast', 'Failed to generate forecast', err);
+        res.status(500).json({ error: 'Failed to generate forecast', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// ─── Food Cost Tracker ───────────────────────────────────
+// POST /api/food-cost/:locationId/items — add/update ingredient costs for a menu item
+router.post('/food-cost/:locationId/items', async (req, res) => {
+    const locationId = paramStr(req.params.locationId);
+    const { menuItemId, ingredients } = req.body;
+    if (!menuItemId || !ingredients || !Array.isArray(ingredients)) {
+        res.status(400).json({ error: 'Missing required fields: menuItemId, ingredients[]' });
+        return;
+    }
+    try {
+        await (0, food_cost_1.upsertIngredientCosts)(locationId, menuItemId, ingredients);
+        res.json({ success: true, menuItemId, ingredientCount: ingredients.length });
+    }
+    catch (err) {
+        logger_1.logger.error('FoodCost', 'Failed to update ingredient costs', err);
+        res.status(500).json({ error: 'Failed to update ingredient costs', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// GET /api/food-cost/:locationId — get all items with food cost analysis
+router.get('/food-cost/:locationId', async (req, res) => {
+    const locationId = paramStr(req.params.locationId);
+    try {
+        const items = await (0, food_cost_1.getFoodCostAnalysis)(locationId);
+        res.json({ locationId, items });
+    }
+    catch (err) {
+        logger_1.logger.error('FoodCost', 'Failed to get food cost analysis', err);
+        res.status(500).json({ error: 'Failed to get food cost analysis', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// GET /api/food-cost/:locationId/summary — overall food cost % and breakdown
+router.get('/food-cost/:locationId/summary', async (req, res) => {
+    const locationId = paramStr(req.params.locationId);
+    try {
+        const summary = await (0, food_cost_1.getFoodCostSummary)(locationId);
+        res.json(summary);
+    }
+    catch (err) {
+        logger_1.logger.error('FoodCost', 'Failed to get food cost summary', err);
+        res.status(500).json({ error: 'Failed to get food cost summary', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// ─── Review Monitoring ───────────────────────────────────
+// GET /api/reviews/:locationId — get recent reviews
+router.get('/reviews/:locationId', async (req, res) => {
+    const locationId = paramStr(req.params.locationId);
+    try {
+        const reviews = await (0, reviews_1.getReviews)(locationId);
+        res.json({
+            locationId,
+            reviewCount: reviews.length,
+            reviews,
+        });
+    }
+    catch (err) {
+        logger_1.logger.error('Reviews', 'Failed to get reviews', err);
+        res.status(500).json({ error: 'Failed to get reviews', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// POST /api/reviews/:id/draft-response — generate a draft response to a review
+router.post('/reviews/:id/draft-response', async (req, res) => {
+    const { rating, reviewText, customerName } = req.body;
+    if (rating === undefined || !reviewText || !customerName) {
+        res.status(400).json({ error: 'Missing required fields: rating, reviewText, customerName' });
+        return;
+    }
+    try {
+        const draft = (0, reviews_1.generateDraftResponse)({ rating, reviewText, customerName });
+        res.json({ draft });
+    }
+    catch (err) {
+        logger_1.logger.error('Reviews', 'Failed to generate draft response', err);
+        res.status(500).json({ error: 'Failed to generate draft response', message: err instanceof Error ? err.message : String(err) });
     }
 });
 exports.default = router;
