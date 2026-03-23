@@ -62,6 +62,24 @@ export async function exchangeOAuthCode(
   };
 }
 
+// ─── Merchant Info ────────────────────────────────────────────
+
+export async function getMerchantInfo(
+  merchantId: string,
+  accessToken: string
+): Promise<{ businessName?: string; email?: string }> {
+  const client = createSquareClient(accessToken);
+  try {
+    const response = await client.merchants.get({ merchantId });
+    return {
+      businessName: response.merchant?.businessName ?? undefined,
+    };
+  } catch (err) {
+    logger.warn('SquareClient', `Failed to fetch merchant profile: ${err}`);
+    return {};
+  }
+}
+
 // ─── Locations ────────────────────────────────────────────────
 
 export async function listLocations(accessToken?: string): Promise<SquareLocation[]> {

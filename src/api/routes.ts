@@ -1,6 +1,8 @@
 import { Router, type Request, type Response } from 'express';
+import crypto from 'crypto';
+import bcrypt from 'bcryptjs';
 import prisma from '../db/client';
-import { getOAuthUrl, exchangeOAuthCode, listLocations as listSquareLocations, listCatalog } from '../integrations/square/client';
+import { getOAuthUrl, exchangeOAuthCode, listLocations as listSquareLocations, listCatalog, getMerchantInfo } from '../integrations/square/client';
 import { syncLocationCatalog, syncLocationOrders, syncAllLocations, initialSync } from '../integrations/square/sync';
 import { snapshotWeather } from '../integrations/weather/client';
 import { getMerchant as getCloverMerchant } from '../integrations/clover/client';
@@ -129,13 +131,34 @@ router.get('/square/oauth/callback', async (req: Request, res: Response) => {
       },
     });
 
-    // Find or create organization
-    let org = await prisma.organization.findFirst();
-    if (!org) {
-      org = await prisma.organization.create({
-        data: { name: squareLocations[0]?.businessName ?? 'My Restaurant' },
-      });
+    // Fetch merchant profile for email (Fix 3)
+    let merchantEmail: string | undefined;
+    try {
+      const merchantInfo = await getMerchantInfo(tokens.merchantId, tokens.accessToken);
+      // Square Merchant API doesn't expose email; get it from Location.businessEmail
+      merchantEmail = squareLocations.find((l) => l.businessEmail)?.businessEmail ?? undefined;
+      // Update SquareMerchant email if found
+      if (merchantEmail) {
+        await prisma.squareMerchant.update({
+          where: { merchantId: tokens.merchantId },
+          data: { email: merchantEmail },
+        });
+      }
+    } catch {
+      // Fall back to placeholder email
     }
+
+    // Find or create organization scoped to THIS merchant (Fix 2)
+    const existingSquareLocation = await prisma.location.findFirst({
+      where: { squareMerchantId: { in: squareLocations.map((l) => l.id!) } },
+      include: { organization: true },
+    });
+
+    let org = existingSquareLocation
+      ? existingSquareLocation.organization
+      : await prisma.organization.create({
+          data: { name: squareLocations[0]?.businessName ?? 'My Restaurant' },
+        });
 
     // Create Location records for each Square location
     const createdLocationIds: string[] = [];
@@ -180,6 +203,24 @@ router.get('/square/oauth/callback', async (req: Request, res: Response) => {
       createdLocationIds.push(location.id);
     }
 
+    // Auto-create User account for this merchant (Fix 1)
+    const userEmail = merchantEmail || `merchant-${tokens.merchantId}@usetempoai.com`;
+    let tempPassword: string | undefined;
+    const existingUser = await prisma.user.findUnique({ where: { email: userEmail } });
+    if (!existingUser) {
+      tempPassword = crypto.randomBytes(12).toString('base64url');
+      const passwordHash = await bcrypt.hash(tempPassword, 12);
+      await prisma.user.create({
+        data: {
+          email: userEmail,
+          passwordHash,
+          name: squareLocations[0]?.businessName ?? 'Square Merchant',
+          organizationId: org.id,
+        },
+      });
+      logger.info('SquareOAuth', `Auto-created user account: ${userEmail}`);
+    }
+
     // Trigger initial sync for all locations in background
     for (const locId of createdLocationIds) {
       initialSync(locId)
@@ -190,7 +231,7 @@ router.get('/square/oauth/callback', async (req: Request, res: Response) => {
     }
 
     // Redirect back to dashboard
-    let dashboardRedirect = process.env.DASHBOARD_URL || 'https://tempoai-three.vercel.app';
+    let dashboardRedirect = process.env.DASHBOARD_URL || 'https://usetempoai.com';
     if (state && typeof state === 'string') {
       try {
         dashboardRedirect = Buffer.from(state, 'base64').toString('utf-8');
@@ -199,10 +240,14 @@ router.get('/square/oauth/callback', async (req: Request, res: Response) => {
       }
     }
     const merchantParam = encodeURIComponent(tokens.merchantId);
-    res.redirect(`${dashboardRedirect}?merchantId=${merchantParam}`);
+    let redirectUrl = `${dashboardRedirect}?merchantId=${merchantParam}`;
+    if (tempPassword) {
+      redirectUrl += `&tempEmail=${encodeURIComponent(userEmail)}&tempPassword=${encodeURIComponent(tempPassword)}`;
+    }
+    res.redirect(redirectUrl);
   } catch (err) {
     logger.error('SquareOAuth', 'OAuth callback failed', err);
-    const dashboardUrl = process.env.DASHBOARD_URL || 'https://tempoai-three.vercel.app';
+    const dashboardUrl = process.env.DASHBOARD_URL || 'https://usetempoai.com';
     res.redirect(`${dashboardUrl}/onboard?error=oauth_failed`);
   }
 });
@@ -795,8 +840,15 @@ router.post('/onboard/square', async (req: Request, res: Response) => {
       return;
     }
 
-    // Find or create organization
-    let org = await prisma.organization.findFirst();
+    // Find or create organization scoped to THIS merchant (Fix 2)
+    let location = await prisma.location.findFirst({
+      where: { squareMerchantId: locationId },
+    });
+
+    let org = location
+      ? await prisma.organization.findUnique({ where: { id: location.organizationId } })
+      : null;
+
     if (!org) {
       org = await prisma.organization.create({
         data: { name: squareLocation.businessName ?? 'My Restaurant' },
@@ -804,10 +856,6 @@ router.post('/onboard/square', async (req: Request, res: Response) => {
     }
 
     // Create or update the location in our DB
-    let location = await prisma.location.findFirst({
-      where: { squareMerchantId: locationId },
-    });
-
     if (!location) {
       location = await prisma.location.create({
         data: {
@@ -944,8 +992,15 @@ router.post('/onboard/clover', async (req: Request, res: Response) => {
     // Verify merchant credentials
     const merchant = await getCloverMerchant(merchantId, apiToken);
 
-    // Find or create organization
-    let org = await prisma.organization.findFirst();
+    // Find or create organization scoped to THIS merchant (Fix 2)
+    let location = await prisma.location.findFirst({
+      where: { cloverMerchantId: merchantId },
+    });
+
+    let org = location
+      ? await prisma.organization.findUnique({ where: { id: location.organizationId } })
+      : null;
+
     if (!org) {
       org = await prisma.organization.create({
         data: { name: merchant.name || 'My Restaurant' },
@@ -953,10 +1008,6 @@ router.post('/onboard/clover', async (req: Request, res: Response) => {
     }
 
     // Create or update location
-    let location = await prisma.location.findFirst({
-      where: { cloverMerchantId: merchantId },
-    });
-
     if (!location) {
       location = await prisma.location.create({
         data: {
@@ -1324,8 +1375,15 @@ router.get('/auth/clover/callback', async (req: Request, res: Response) => {
     // Fetch merchant details
     const merchant = await getCloverMerchant(merchant_id, accessToken);
 
-    // Find or create organization
-    let org = await prisma.organization.findFirst();
+    // Find or create organization scoped to THIS merchant (Fix 2)
+    let location = await prisma.location.findFirst({
+      where: { cloverMerchantId: merchant_id },
+    });
+
+    let org = location
+      ? await prisma.organization.findUnique({ where: { id: location.organizationId } })
+      : null;
+
     if (!org) {
       org = await prisma.organization.create({
         data: { name: merchant.name || 'My Restaurant' },
@@ -1333,10 +1391,6 @@ router.get('/auth/clover/callback', async (req: Request, res: Response) => {
     }
 
     // Create or update location
-    let location = await prisma.location.findFirst({
-      where: { cloverMerchantId: merchant_id },
-    });
-
     if (!location) {
       location = await prisma.location.create({
         data: {
@@ -1373,6 +1427,24 @@ router.get('/auth/clover/callback', async (req: Request, res: Response) => {
 
     logger.info('CloverOAuth', `Onboarded: ${location.name} (${location.id})`);
 
+    // Auto-create User account for this merchant (Fix 1)
+    const cloverUserEmail = `merchant-${merchant_id}@usetempoai.com`;
+    let cloverTempPassword: string | undefined;
+    const existingCloverUser = await prisma.user.findUnique({ where: { email: cloverUserEmail } });
+    if (!existingCloverUser) {
+      cloverTempPassword = crypto.randomBytes(12).toString('base64url');
+      const cloverPasswordHash = await bcrypt.hash(cloverTempPassword, 12);
+      await prisma.user.create({
+        data: {
+          email: cloverUserEmail,
+          passwordHash: cloverPasswordHash,
+          name: merchant.name || 'Clover Merchant',
+          organizationId: org.id,
+        },
+      });
+      logger.info('CloverOAuth', `Auto-created user account: ${cloverUserEmail}`);
+    }
+
     // Run initial sync in background (don't block the redirect)
     initialCloverSync(location.id)
       .then(() => analyzeLocation(location!.id))
@@ -1380,8 +1452,12 @@ router.get('/auth/clover/callback', async (req: Request, res: Response) => {
       .catch((err) => logger.error('CloverOAuth', `Background sync failed for ${location!.name}`, err));
 
     // Redirect to dashboard
-    const dashboardUrl = process.env.DASHBOARD_URL || 'https://tempoai-three.vercel.app';
-    res.redirect(`${dashboardUrl}/onboard?success=true&location=${encodeURIComponent(location.name)}`);
+    const dashboardUrl = process.env.DASHBOARD_URL || 'https://usetempoai.com';
+    let cloverRedirectUrl = `${dashboardUrl}/onboard?success=true&location=${encodeURIComponent(location.name)}`;
+    if (cloverTempPassword) {
+      cloverRedirectUrl += `&tempEmail=${encodeURIComponent(cloverUserEmail)}&tempPassword=${encodeURIComponent(cloverTempPassword)}`;
+    }
+    res.redirect(cloverRedirectUrl);
   } catch (err) {
     logger.error('CloverOAuth', 'OAuth callback failed', err);
     res.status(500).json({ error: 'OAuth failed', message: err instanceof Error ? err.message : String(err) });
@@ -1431,8 +1507,15 @@ router.get('/clover/oauth/callback', async (req: Request, res: Response) => {
       create: { merchantId: merchant_id, accessToken, name: merchant.name || 'Clover Merchant' },
     });
 
-    // Find or create organization
-    let org = await prisma.organization.findFirst();
+    // Find or create organization scoped to THIS merchant (Fix 2)
+    let location = await prisma.location.findFirst({
+      where: { cloverMerchantId: merchant_id },
+    });
+
+    let org = location
+      ? await prisma.organization.findUnique({ where: { id: location.organizationId } })
+      : null;
+
     if (!org) {
       org = await prisma.organization.create({
         data: { name: merchant.name || 'My Restaurant' },
@@ -1440,10 +1523,6 @@ router.get('/clover/oauth/callback', async (req: Request, res: Response) => {
     }
 
     // Create or update location
-    let location = await prisma.location.findFirst({
-      where: { cloverMerchantId: merchant_id },
-    });
-
     if (!location) {
       location = await prisma.location.create({
         data: {
@@ -1473,15 +1552,37 @@ router.get('/clover/oauth/callback', async (req: Request, res: Response) => {
 
     logger.info('CloverAppMarket', `Merchant onboarded: ${location.name} (${merchant_id})`);
 
+    // Auto-create User account for this merchant (Fix 1)
+    const appMarketUserEmail = `merchant-${merchant_id}@usetempoai.com`;
+    let appMarketTempPassword: string | undefined;
+    const existingAppMarketUser = await prisma.user.findUnique({ where: { email: appMarketUserEmail } });
+    if (!existingAppMarketUser) {
+      appMarketTempPassword = crypto.randomBytes(12).toString('base64url');
+      const appMarketPasswordHash = await bcrypt.hash(appMarketTempPassword, 12);
+      await prisma.user.create({
+        data: {
+          email: appMarketUserEmail,
+          passwordHash: appMarketPasswordHash,
+          name: merchant.name || 'Clover Merchant',
+          organizationId: org.id,
+        },
+      });
+      logger.info('CloverAppMarket', `Auto-created user account: ${appMarketUserEmail}`);
+    }
+
     // Trigger initial data sync in background
     initialCloverSync(location.id)
       .then(() => analyzeLocation(location!.id))
       .then(() => logger.info('CloverAppMarket', `Initial sync complete for ${location!.name}`))
       .catch((err) => logger.error('CloverAppMarket', `Background sync failed`, err));
 
-    // Redirect to dashboard
-    const dashboardUrl = process.env.DASHBOARD_URL || 'https://tempoai-three.vercel.app';
-    res.redirect(`${dashboardUrl}/onboard?success=true&merchant=${merchant_id}&location=${encodeURIComponent(location.name)}`);
+    // Redirect to dashboard with credentials
+    const dashboardUrl = process.env.DASHBOARD_URL || 'https://usetempoai.com';
+    let appMarketRedirectUrl = `${dashboardUrl}/onboard?success=true&merchant=${merchant_id}&location=${encodeURIComponent(location.name)}`;
+    if (appMarketTempPassword) {
+      appMarketRedirectUrl += `&tempEmail=${encodeURIComponent(appMarketUserEmail)}&tempPassword=${encodeURIComponent(appMarketTempPassword)}`;
+    }
+    res.redirect(appMarketRedirectUrl);
   } catch (err) {
     logger.error('CloverAppMarket', 'OAuth callback failed', err);
     res.status(500).json({ error: 'OAuth failed', message: err instanceof Error ? err.message : String(err) });

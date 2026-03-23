@@ -4,6 +4,7 @@ exports.squareIntegration = void 0;
 exports.createSquareClient = createSquareClient;
 exports.getOAuthUrl = getOAuthUrl;
 exports.exchangeOAuthCode = exchangeOAuthCode;
+exports.getMerchantInfo = getMerchantInfo;
 exports.listLocations = listLocations;
 exports.listCatalog = listCatalog;
 exports.listOrders = listOrders;
@@ -52,6 +53,20 @@ async function exchangeOAuthCode(code, redirectUri) {
         merchantId: response.merchantId ?? '',
         expiresAt: new Date(response.expiresAt ?? Date.now()),
     };
+}
+// ─── Merchant Info ────────────────────────────────────────────
+async function getMerchantInfo(merchantId, accessToken) {
+    const client = createSquareClient(accessToken);
+    try {
+        const response = await client.merchants.get({ merchantId });
+        return {
+            businessName: response.merchant?.businessName ?? undefined,
+        };
+    }
+    catch (err) {
+        logger_1.logger.warn('SquareClient', `Failed to fetch merchant profile: ${err}`);
+        return {};
+    }
 }
 // ─── Locations ────────────────────────────────────────────────
 async function listLocations(accessToken) {

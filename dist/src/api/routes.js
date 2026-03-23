@@ -4,6 +4,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
+const crypto_1 = __importDefault(require("crypto"));
+const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const client_1 = __importDefault(require("../db/client"));
 const client_2 = require("../integrations/square/client");
 const sync_1 = require("../integrations/square/sync");
@@ -15,6 +17,8 @@ const engine_1 = require("../ai/engine");
 const dayparts_1 = require("../utils/dayparts");
 const logger_1 = require("../utils/logger");
 const billing_1 = __importDefault(require("./billing"));
+const auth_1 = __importDefault(require("./auth"));
+const auth_2 = require("./middleware/auth");
 const daily_summary_1 = require("../services/daily-summary");
 const alerts_1 = require("../services/alerts");
 const forecasting_1 = require("../services/forecasting");
@@ -24,6 +28,8 @@ const email_1 = require("../services/email");
 const router = (0, express_1.Router)();
 // ─── Billing ──────────────────────────────────────────────
 router.use('/billing', billing_1.default);
+// ─── Auth ────────────────────────────────────────────────
+router.use('/auth', auth_1.default);
 function paramStr(val) {
     return Array.isArray(val) ? val[0] : val ?? '';
 }
@@ -110,13 +116,33 @@ router.get('/square/oauth/callback', async (req, res) => {
                 locations: JSON.stringify(squareLocations.map((l) => ({ id: l.id, name: l.name }))),
             },
         });
-        // Find or create organization
-        let org = await client_1.default.organization.findFirst();
-        if (!org) {
-            org = await client_1.default.organization.create({
+        // Fetch merchant profile for email (Fix 3)
+        let merchantEmail;
+        try {
+            const merchantInfo = await (0, client_2.getMerchantInfo)(tokens.merchantId, tokens.accessToken);
+            // Square Merchant API doesn't expose email; get it from Location.businessEmail
+            merchantEmail = squareLocations.find((l) => l.businessEmail)?.businessEmail ?? undefined;
+            // Update SquareMerchant email if found
+            if (merchantEmail) {
+                await client_1.default.squareMerchant.update({
+                    where: { merchantId: tokens.merchantId },
+                    data: { email: merchantEmail },
+                });
+            }
+        }
+        catch {
+            // Fall back to placeholder email
+        }
+        // Find or create organization scoped to THIS merchant (Fix 2)
+        const existingSquareLocation = await client_1.default.location.findFirst({
+            where: { squareMerchantId: { in: squareLocations.map((l) => l.id) } },
+            include: { organization: true },
+        });
+        let org = existingSquareLocation
+            ? existingSquareLocation.organization
+            : await client_1.default.organization.create({
                 data: { name: squareLocations[0]?.businessName ?? 'My Restaurant' },
             });
-        }
         // Create Location records for each Square location
         const createdLocationIds = [];
         for (const sl of squareLocations) {
@@ -157,6 +183,23 @@ router.get('/square/oauth/callback', async (req, res) => {
             }
             createdLocationIds.push(location.id);
         }
+        // Auto-create User account for this merchant (Fix 1)
+        const userEmail = merchantEmail || `merchant-${tokens.merchantId}@usetempoai.com`;
+        let tempPassword;
+        const existingUser = await client_1.default.user.findUnique({ where: { email: userEmail } });
+        if (!existingUser) {
+            tempPassword = crypto_1.default.randomBytes(12).toString('base64url');
+            const passwordHash = await bcryptjs_1.default.hash(tempPassword, 12);
+            await client_1.default.user.create({
+                data: {
+                    email: userEmail,
+                    passwordHash,
+                    name: squareLocations[0]?.businessName ?? 'Square Merchant',
+                    organizationId: org.id,
+                },
+            });
+            logger_1.logger.info('SquareOAuth', `Auto-created user account: ${userEmail}`);
+        }
         // Trigger initial sync for all locations in background
         for (const locId of createdLocationIds) {
             (0, sync_1.initialSync)(locId)
@@ -166,7 +209,7 @@ router.get('/square/oauth/callback', async (req, res) => {
                 .catch((err) => logger_1.logger.error('SquareOAuth', `Background sync failed for ${locId}`, err));
         }
         // Redirect back to dashboard
-        let dashboardRedirect = process.env.DASHBOARD_URL || 'https://tempoai-three.vercel.app';
+        let dashboardRedirect = process.env.DASHBOARD_URL || 'https://usetempoai.com';
         if (state && typeof state === 'string') {
             try {
                 dashboardRedirect = Buffer.from(state, 'base64').toString('utf-8');
@@ -176,11 +219,15 @@ router.get('/square/oauth/callback', async (req, res) => {
             }
         }
         const merchantParam = encodeURIComponent(tokens.merchantId);
-        res.redirect(`${dashboardRedirect}?merchantId=${merchantParam}`);
+        let redirectUrl = `${dashboardRedirect}?merchantId=${merchantParam}`;
+        if (tempPassword) {
+            redirectUrl += `&tempEmail=${encodeURIComponent(userEmail)}&tempPassword=${encodeURIComponent(tempPassword)}`;
+        }
+        res.redirect(redirectUrl);
     }
     catch (err) {
         logger_1.logger.error('SquareOAuth', 'OAuth callback failed', err);
-        const dashboardUrl = process.env.DASHBOARD_URL || 'https://tempoai-three.vercel.app';
+        const dashboardUrl = process.env.DASHBOARD_URL || 'https://usetempoai.com';
         res.redirect(`${dashboardUrl}/onboard?error=oauth_failed`);
     }
 });
@@ -301,8 +348,13 @@ router.get('/onboard/status/:merchantId', async (req, res) => {
     });
 });
 // ─── Locations ────────────────────────────────────────────
-router.get('/locations', async (_req, res) => {
+router.get('/locations', auth_2.optionalAuth, async (req, res) => {
+    // Org-scoping: non-admin authenticated users only see their org's locations
+    const where = req.user && req.user.role !== 'ADMIN' && req.user.organizationId
+        ? { organizationId: req.user.organizationId }
+        : {};
     const locations = await client_1.default.location.findMany({
+        where,
         include: {
             organization: true,
             _count: { select: { orders: true, menuItems: true, recommendations: true } },
@@ -698,17 +750,19 @@ router.post('/onboard/square', async (req, res) => {
             res.status(404).json({ error: `Location ${locationId} not found in Square account` });
             return;
         }
-        // Find or create organization
-        let org = await client_1.default.organization.findFirst();
+        // Find or create organization scoped to THIS merchant (Fix 2)
+        let location = await client_1.default.location.findFirst({
+            where: { squareMerchantId: locationId },
+        });
+        let org = location
+            ? await client_1.default.organization.findUnique({ where: { id: location.organizationId } })
+            : null;
         if (!org) {
             org = await client_1.default.organization.create({
                 data: { name: squareLocation.businessName ?? 'My Restaurant' },
             });
         }
         // Create or update the location in our DB
-        let location = await client_1.default.location.findFirst({
-            where: { squareMerchantId: locationId },
-        });
         if (!location) {
             location = await client_1.default.location.create({
                 data: {
@@ -833,17 +887,19 @@ router.post('/onboard/clover', async (req, res) => {
     try {
         // Verify merchant credentials
         const merchant = await (0, client_4.getMerchant)(merchantId, apiToken);
-        // Find or create organization
-        let org = await client_1.default.organization.findFirst();
+        // Find or create organization scoped to THIS merchant (Fix 2)
+        let location = await client_1.default.location.findFirst({
+            where: { cloverMerchantId: merchantId },
+        });
+        let org = location
+            ? await client_1.default.organization.findUnique({ where: { id: location.organizationId } })
+            : null;
         if (!org) {
             org = await client_1.default.organization.create({
                 data: { name: merchant.name || 'My Restaurant' },
             });
         }
         // Create or update location
-        let location = await client_1.default.location.findFirst({
-            where: { cloverMerchantId: merchantId },
-        });
         if (!location) {
             location = await client_1.default.location.create({
                 data: {
@@ -1175,17 +1231,19 @@ router.get('/auth/clover/callback', async (req, res) => {
         logger_1.logger.info('CloverOAuth', `Got access token for merchant ${merchant_id}`);
         // Fetch merchant details
         const merchant = await (0, client_4.getMerchant)(merchant_id, accessToken);
-        // Find or create organization
-        let org = await client_1.default.organization.findFirst();
+        // Find or create organization scoped to THIS merchant (Fix 2)
+        let location = await client_1.default.location.findFirst({
+            where: { cloverMerchantId: merchant_id },
+        });
+        let org = location
+            ? await client_1.default.organization.findUnique({ where: { id: location.organizationId } })
+            : null;
         if (!org) {
             org = await client_1.default.organization.create({
                 data: { name: merchant.name || 'My Restaurant' },
             });
         }
         // Create or update location
-        let location = await client_1.default.location.findFirst({
-            where: { cloverMerchantId: merchant_id },
-        });
         if (!location) {
             location = await client_1.default.location.create({
                 data: {
@@ -1220,14 +1278,35 @@ router.get('/auth/clover/callback', async (req, res) => {
             create: { merchantId: merchant_id, accessToken, name: merchant.name || 'Clover Merchant' },
         });
         logger_1.logger.info('CloverOAuth', `Onboarded: ${location.name} (${location.id})`);
+        // Auto-create User account for this merchant (Fix 1)
+        const cloverUserEmail = `merchant-${merchant_id}@usetempoai.com`;
+        let cloverTempPassword;
+        const existingCloverUser = await client_1.default.user.findUnique({ where: { email: cloverUserEmail } });
+        if (!existingCloverUser) {
+            cloverTempPassword = crypto_1.default.randomBytes(12).toString('base64url');
+            const cloverPasswordHash = await bcryptjs_1.default.hash(cloverTempPassword, 12);
+            await client_1.default.user.create({
+                data: {
+                    email: cloverUserEmail,
+                    passwordHash: cloverPasswordHash,
+                    name: merchant.name || 'Clover Merchant',
+                    organizationId: org.id,
+                },
+            });
+            logger_1.logger.info('CloverOAuth', `Auto-created user account: ${cloverUserEmail}`);
+        }
         // Run initial sync in background (don't block the redirect)
         (0, sync_2.initialCloverSync)(location.id)
             .then(() => (0, engine_1.analyzeLocation)(location.id))
             .then(() => logger_1.logger.info('CloverOAuth', `Initial sync + analysis complete for ${location.name}`))
             .catch((err) => logger_1.logger.error('CloverOAuth', `Background sync failed for ${location.name}`, err));
         // Redirect to dashboard
-        const dashboardUrl = process.env.DASHBOARD_URL || 'https://tempoai-three.vercel.app';
-        res.redirect(`${dashboardUrl}/onboard?success=true&location=${encodeURIComponent(location.name)}`);
+        const dashboardUrl = process.env.DASHBOARD_URL || 'https://usetempoai.com';
+        let cloverRedirectUrl = `${dashboardUrl}/onboard?success=true&location=${encodeURIComponent(location.name)}`;
+        if (cloverTempPassword) {
+            cloverRedirectUrl += `&tempEmail=${encodeURIComponent(cloverUserEmail)}&tempPassword=${encodeURIComponent(cloverTempPassword)}`;
+        }
+        res.redirect(cloverRedirectUrl);
     }
     catch (err) {
         logger_1.logger.error('CloverOAuth', 'OAuth callback failed', err);
@@ -1268,17 +1347,19 @@ router.get('/clover/oauth/callback', async (req, res) => {
             update: { accessToken, name: merchant.name || 'Clover Merchant', active: true },
             create: { merchantId: merchant_id, accessToken, name: merchant.name || 'Clover Merchant' },
         });
-        // Find or create organization
-        let org = await client_1.default.organization.findFirst();
+        // Find or create organization scoped to THIS merchant (Fix 2)
+        let location = await client_1.default.location.findFirst({
+            where: { cloverMerchantId: merchant_id },
+        });
+        let org = location
+            ? await client_1.default.organization.findUnique({ where: { id: location.organizationId } })
+            : null;
         if (!org) {
             org = await client_1.default.organization.create({
                 data: { name: merchant.name || 'My Restaurant' },
             });
         }
         // Create or update location
-        let location = await client_1.default.location.findFirst({
-            where: { cloverMerchantId: merchant_id },
-        });
         if (!location) {
             location = await client_1.default.location.create({
                 data: {
@@ -1307,14 +1388,35 @@ router.get('/clover/oauth/callback', async (req, res) => {
             });
         }
         logger_1.logger.info('CloverAppMarket', `Merchant onboarded: ${location.name} (${merchant_id})`);
+        // Auto-create User account for this merchant (Fix 1)
+        const appMarketUserEmail = `merchant-${merchant_id}@usetempoai.com`;
+        let appMarketTempPassword;
+        const existingAppMarketUser = await client_1.default.user.findUnique({ where: { email: appMarketUserEmail } });
+        if (!existingAppMarketUser) {
+            appMarketTempPassword = crypto_1.default.randomBytes(12).toString('base64url');
+            const appMarketPasswordHash = await bcryptjs_1.default.hash(appMarketTempPassword, 12);
+            await client_1.default.user.create({
+                data: {
+                    email: appMarketUserEmail,
+                    passwordHash: appMarketPasswordHash,
+                    name: merchant.name || 'Clover Merchant',
+                    organizationId: org.id,
+                },
+            });
+            logger_1.logger.info('CloverAppMarket', `Auto-created user account: ${appMarketUserEmail}`);
+        }
         // Trigger initial data sync in background
         (0, sync_2.initialCloverSync)(location.id)
             .then(() => (0, engine_1.analyzeLocation)(location.id))
             .then(() => logger_1.logger.info('CloverAppMarket', `Initial sync complete for ${location.name}`))
             .catch((err) => logger_1.logger.error('CloverAppMarket', `Background sync failed`, err));
-        // Redirect to dashboard
-        const dashboardUrl = process.env.DASHBOARD_URL || 'https://tempoai-three.vercel.app';
-        res.redirect(`${dashboardUrl}/onboard?success=true&merchant=${merchant_id}&location=${encodeURIComponent(location.name)}`);
+        // Redirect to dashboard with credentials
+        const dashboardUrl = process.env.DASHBOARD_URL || 'https://usetempoai.com';
+        let appMarketRedirectUrl = `${dashboardUrl}/onboard?success=true&merchant=${merchant_id}&location=${encodeURIComponent(location.name)}`;
+        if (appMarketTempPassword) {
+            appMarketRedirectUrl += `&tempEmail=${encodeURIComponent(appMarketUserEmail)}&tempPassword=${encodeURIComponent(appMarketTempPassword)}`;
+        }
+        res.redirect(appMarketRedirectUrl);
     }
     catch (err) {
         logger_1.logger.error('CloverAppMarket', 'OAuth callback failed', err);
