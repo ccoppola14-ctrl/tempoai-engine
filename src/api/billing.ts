@@ -29,21 +29,25 @@ router.post('/create-checkout', async (req: Request, res: Response) => {
     return;
   }
 
-  if (plan !== 'basic' && plan !== 'pro') {
-    res.status(400).json({ error: 'Plan must be "basic" or "pro"' });
+  const validPlans = ['starter', 'growth', 'pro'];
+  if (!validPlans.includes(plan)) {
+    res.status(400).json({ error: 'Plan must be "starter", "growth", or "pro"' });
     return;
   }
 
-  const priceId = plan === 'basic'
-    ? process.env.STRIPE_BASIC_PRICE_ID
-    : process.env.STRIPE_PRO_PRICE_ID;
+  const priceMap: Record<string, string | undefined> = {
+    starter: process.env.STRIPE_STARTER_PRICE_ID,
+    growth: process.env.STRIPE_GROWTH_PRICE_ID,
+    pro: process.env.STRIPE_PRO_PRICE_ID,
+  };
+  const priceId = priceMap[plan];
 
   if (!priceId) {
     res.status(503).json({ error: `Price ID not configured for ${plan} plan` });
     return;
   }
 
-  const dashboardUrl = process.env.DASHBOARD_URL || 'https://tempoai-three.vercel.app';
+  const dashboardUrl = process.env.DASHBOARD_URL || 'https://usetempoai.com';
 
   try {
     const session = await stripe.checkout.sessions.create({
@@ -82,7 +86,7 @@ router.get('/success', async (req: Request, res: Response) => {
     return;
   }
 
-  const dashboardUrl = process.env.DASHBOARD_URL || 'https://tempoai-three.vercel.app';
+  const dashboardUrl = process.env.DASHBOARD_URL || 'https://usetempoai.com';
 
   try {
     const session = await stripe.checkout.sessions.retrieve(sessionId, {
@@ -245,7 +249,7 @@ router.get('/portal', async (req: Request, res: Response) => {
     return;
   }
 
-  const dashboardUrl = process.env.DASHBOARD_URL || 'https://tempoai-three.vercel.app';
+  const dashboardUrl = process.env.DASHBOARD_URL || 'https://usetempoai.com';
 
   try {
     // Find the Stripe customer ID
