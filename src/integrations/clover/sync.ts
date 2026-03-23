@@ -1,5 +1,6 @@
 import cron from 'node-cron';
 import prisma from '../../db/client';
+import { decrypt } from '../../utils/encryption';
 import { logger } from '../../utils/logger';
 import { listInventory, listOrders, listOrderLineItems, listPayments } from './client';
 
@@ -32,7 +33,7 @@ export async function syncCloverCatalog(locationId: string): Promise<number> {
   }
 
   try {
-    const items = await listInventory(location.cloverMerchantId, location.cloverApiToken);
+    const items = await listInventory(location.cloverMerchantId, decrypt(location.cloverApiToken));
     let count = 0;
 
     for (const item of items) {
@@ -98,7 +99,7 @@ export async function syncCloverOrders(locationId: string, since?: Date): Promis
     const sinceDate = since ?? await getSyncSince(locationId);
     const orders = await listOrders(
       location.cloverMerchantId,
-      location.cloverApiToken,
+      decrypt(location.cloverApiToken),
       sinceDate
     );
     let count = 0;
@@ -123,7 +124,7 @@ export async function syncCloverOrders(locationId: string, since?: Date): Promis
       const lineItems = await listOrderLineItems(
         location.cloverMerchantId,
         order.id,
-        location.cloverApiToken
+        decrypt(location.cloverApiToken)
       );
 
       // Filter line items to those with a matching menu item
@@ -184,7 +185,7 @@ export async function syncCloverPayments(locationId: string, since?: Date): Prom
   const sinceDate = since ?? await getSyncSince(locationId);
   const payments = await listPayments(
     location.cloverMerchantId,
-    location.cloverApiToken,
+    decrypt(location.cloverApiToken),
     sinceDate
   );
 

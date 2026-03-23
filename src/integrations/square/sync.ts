@@ -1,5 +1,6 @@
 import cron from 'node-cron';
 import prisma from '../../db/client';
+import { decrypt } from '../../utils/encryption';
 import { logger } from '../../utils/logger';
 import { listCatalog, listOrders, listPayments } from './client';
 
@@ -32,7 +33,7 @@ export async function syncLocationCatalog(locationId: string): Promise<number> {
   }
 
   try {
-    const catalogItems = await listCatalog(location.squareAccessToken);
+    const catalogItems = await listCatalog(decrypt(location.squareAccessToken));
     let count = 0;
 
     for (const item of catalogItems) {
@@ -95,7 +96,7 @@ export async function syncLocationOrders(locationId: string, since?: Date): Prom
       location.squareMerchantId,
       sinceDate,
       undefined,
-      location.squareAccessToken
+      decrypt(location.squareAccessToken)
     );
     let count = 0;
 
@@ -175,7 +176,7 @@ export async function syncLocationPayments(locationId: string, since?: Date): Pr
     location.squareMerchantId,
     sinceDate,
     undefined,
-    location.squareAccessToken
+    decrypt(location.squareAccessToken)
   );
 
   logger.info('SquareSync', `Fetched ${payments.length} payments for ${locationId}`);
