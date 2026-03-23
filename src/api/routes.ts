@@ -10,6 +10,8 @@ import { analyzeLocation, analyzeAllLocations } from '../ai/engine';
 import { getDaypart, getDayName } from '../utils/dayparts';
 import { logger } from '../utils/logger';
 import billingRouter from './billing';
+import authRouter from './auth';
+import { optionalAuth } from './middleware/auth';
 import { generateDailySummary } from '../services/daily-summary';
 import { getActiveAlerts, acknowledgeAlert, evaluateAlerts } from '../services/alerts';
 import { generateForecast } from '../services/forecasting';
@@ -21,6 +23,9 @@ const router = Router();
 
 // ─── Billing ──────────────────────────────────────────────
 router.use('/billing', billingRouter);
+
+// ─── Auth ────────────────────────────────────────────────
+router.use('/auth', authRouter);
 
 function paramStr(val: string | string[] | undefined): string {
   return Array.isArray(val) ? val[0] : val ?? '';
@@ -333,8 +338,14 @@ router.get('/onboard/status/:merchantId', async (req: Request, res: Response) =>
 });
 
 // ─── Locations ────────────────────────────────────────────
-router.get('/locations', async (_req: Request, res: Response) => {
+router.get('/locations', optionalAuth, async (req: Request, res: Response) => {
+  // Org-scoping: non-admin authenticated users only see their org's locations
+  const where = req.user && req.user.role !== 'ADMIN' && req.user.organizationId
+    ? { organizationId: req.user.organizationId }
+    : {};
+
   const locations = await prisma.location.findMany({
+    where,
     include: {
       organization: true,
       _count: { select: { orders: true, menuItems: true, recommendations: true } },
