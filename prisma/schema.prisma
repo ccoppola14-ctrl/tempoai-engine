@@ -12,15 +12,19 @@ enum UserRole {
 }
 
 model User {
-  id             String       @id @default(uuid())
-  email          String       @unique
-  passwordHash   String
-  name           String
-  role           UserRole     @default(OWNER)
-  organizationId String?
-  organization   Organization? @relation(fields: [organizationId], references: [id])
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  id                  String       @id @default(uuid())
+  email               String       @unique
+  passwordHash        String
+  name                String
+  role                UserRole     @default(OWNER)
+  organizationId      String?
+  organization        Organization? @relation(fields: [organizationId], references: [id])
+  resetToken          String?
+  resetTokenExpiry    DateTime?
+  emailVerified       Boolean      @default(false)
+  verificationToken   String?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
 }
 
 model Organization {

@@ -205,6 +205,261 @@ export async function sendDailySummary(
   }
 }
 
+// ─── Welcome Email (new signup via get-started form) ─────────────
+export async function sendWelcomeEmail(
+  to: string,
+  name: string,
+  tempPassword: string,
+  verificationToken: string,
+): Promise<{ success: boolean; id?: string; error?: string }> {
+  const loginUrl = `${DASHBOARD_URL}/login`;
+  const onboardUrl = `${DASHBOARD_URL}/onboard`;
+  const verifyUrl = `${DASHBOARD_URL}/verify-email?token=${verificationToken}`;
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#0D0D1A;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#0D0D1A;">
+    <tr><td align="center" style="padding:32px 16px;">
+      <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;">
+        <tr><td style="padding:32px;background:linear-gradient(135deg,#1A1A2E 0%,#16162A 100%);border-radius:16px 16px 0 0;border-bottom:2px solid #60A5FA;">
+          <span style="color:#60A5FA;font-size:13px;text-transform:uppercase;letter-spacing:2px;font-weight:600;">Welcome to TempoAI</span>
+          <h1 style="color:#FFFFFF;font-size:24px;margin:8px 0 4px;font-weight:700;">Hey ${name}!</h1>
+          <p style="color:#A0A0B8;font-size:15px;margin:0;">Your account is ready. Here&rsquo;s how to get started.</p>
+        </td></tr>
+        <tr><td style="background-color:#141428;padding:24px 32px;">
+          <div style="background:#1A1A2E;border-radius:12px;padding:20px;margin-bottom:16px;">
+            <span style="color:#A0A0B8;font-size:12px;text-transform:uppercase;letter-spacing:1px;">Your Temporary Password</span>
+            <p style="color:#60A5FA;font-size:24px;font-weight:700;margin:8px 0 0;font-family:monospace;letter-spacing:2px;">${tempPassword}</p>
+          </div>
+          <p style="color:#A0A0B8;font-size:14px;margin:0 0 8px;">Please change this password after your first login.</p>
+        </td></tr>
+        <tr><td style="background-color:#141428;padding:0 32px 24px;">
+          <h2 style="color:#FFFFFF;font-size:18px;margin:0 0 16px;">Next Steps</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+            <tr><td style="padding:12px 16px;background:#1A1A2E;border-radius:8px;margin-bottom:8px;">
+              <span style="color:#60A5FA;font-weight:700;font-size:16px;">1.</span>
+              <span style="color:#E0E0E0;font-size:15px;margin-left:8px;">Log in at <a href="${loginUrl}" style="color:#60A5FA;text-decoration:none;">${loginUrl}</a></span>
+            </td></tr>
+            <tr><td style="height:8px;"></td></tr>
+            <tr><td style="padding:12px 16px;background:#1A1A2E;border-radius:8px;">
+              <span style="color:#60A5FA;font-weight:700;font-size:16px;">2.</span>
+              <span style="color:#E0E0E0;font-size:15px;margin-left:8px;">Connect your POS system in the <a href="${onboardUrl}" style="color:#60A5FA;text-decoration:none;">onboarding wizard</a></span>
+            </td></tr>
+            <tr><td style="height:8px;"></td></tr>
+            <tr><td style="padding:12px 16px;background:#1A1A2E;border-radius:8px;">
+              <span style="color:#60A5FA;font-weight:700;font-size:16px;">3.</span>
+              <span style="color:#E0E0E0;font-size:15px;margin-left:8px;">Verify your email: <a href="${verifyUrl}" style="color:#60A5FA;text-decoration:none;">Click here to verify</a></span>
+            </td></tr>
+          </table>
+        </td></tr>
+        <tr><td style="background-color:#141428;padding:8px 32px 32px;text-align:center;">
+          <a href="${onboardUrl}" style="display:inline-block;background:linear-gradient(135deg,#3B82F6 0%,#2563EB 100%);color:#FFFFFF;font-size:15px;font-weight:700;text-decoration:none;padding:14px 40px;border-radius:8px;letter-spacing:0.5px;">
+            Start Onboarding
+          </a>
+        </td></tr>
+        <tr><td style="padding:24px 32px;background:#0F0F22;border-radius:0 0 16px 16px;text-align:center;">
+          <p style="color:#555;font-size:12px;margin:0;">Sent by <span style="color:#60A5FA;">TempoAI</span> &mdash; AI-powered restaurant intelligence.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+  try {
+    const { data, error } = await getResend().emails.send({
+      from: FROM_EMAIL,
+      to,
+      subject: 'Welcome to TempoAI — Your account is ready!',
+      html,
+    });
+    if (error) {
+      logger.error('Email', `Failed to send welcome email to ${to}`, error);
+      return { success: false, error: error.message };
+    }
+    logger.info('Email', `Welcome email sent to ${to} (id: ${data?.id})`);
+    return { success: true, id: data?.id };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error('Email', `Failed to send welcome email to ${to}`, err);
+    return { success: false, error: message };
+  }
+}
+
+// ─── New Lead Notification (to Chuck) ────────────────────────────
+export async function sendNewLeadNotification(lead: {
+  name: string;
+  email: string;
+  phone: string;
+  restaurant: string;
+  locations: string;
+  pos: string;
+  notes: string;
+}): Promise<{ success: boolean; error?: string }> {
+  const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background-color:#0D0D1A;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#0D0D1A;">
+    <tr><td align="center" style="padding:32px 16px;">
+      <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;">
+        <tr><td style="padding:32px;background:linear-gradient(135deg,#1A1A2E 0%,#16162A 100%);border-radius:16px;border-left:4px solid #4ADE80;">
+          <span style="color:#4ADE80;font-size:13px;text-transform:uppercase;letter-spacing:2px;font-weight:600;">New Lead Signed Up</span>
+          <h1 style="color:#FFFFFF;font-size:22px;margin:12px 0 16px;font-weight:700;">${lead.restaurant}</h1>
+          <table role="presentation" cellspacing="0" cellpadding="0" style="width:100%;">
+            <tr><td style="color:#A0A0B8;font-size:13px;padding:4px 0;">Name:</td><td style="color:#E0E0E0;font-size:14px;padding:4px 0 4px 12px;">${lead.name}</td></tr>
+            <tr><td style="color:#A0A0B8;font-size:13px;padding:4px 0;">Email:</td><td style="color:#E0E0E0;font-size:14px;padding:4px 0 4px 12px;">${lead.email}</td></tr>
+            <tr><td style="color:#A0A0B8;font-size:13px;padding:4px 0;">Phone:</td><td style="color:#E0E0E0;font-size:14px;padding:4px 0 4px 12px;">${lead.phone || 'Not provided'}</td></tr>
+            <tr><td style="color:#A0A0B8;font-size:13px;padding:4px 0;">Locations:</td><td style="color:#E0E0E0;font-size:14px;padding:4px 0 4px 12px;">${lead.locations}</td></tr>
+            <tr><td style="color:#A0A0B8;font-size:13px;padding:4px 0;">POS:</td><td style="color:#E0E0E0;font-size:14px;padding:4px 0 4px 12px;">${lead.pos}</td></tr>
+            <tr><td style="color:#A0A0B8;font-size:13px;padding:4px 0;">Notes:</td><td style="color:#E0E0E0;font-size:14px;padding:4px 0 4px 12px;">${lead.notes || 'None'}</td></tr>
+          </table>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+  try {
+    const { error } = await getResend().emails.send({
+      from: FROM_EMAIL,
+      to: 'ccoppola14@gmail.com',
+      subject: `New TempoAI Lead: ${lead.restaurant}`,
+      html,
+    });
+    if (error) {
+      logger.error('Email', 'Failed to send lead notification', error);
+      return { success: false, error: error.message };
+    }
+    logger.info('Email', `Lead notification sent for ${lead.restaurant}`);
+    return { success: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error('Email', 'Failed to send lead notification', err);
+    return { success: false, error: message };
+  }
+}
+
+// ─── Password Reset Email ────────────────────────────────────────
+export async function sendPasswordResetEmail(
+  to: string,
+  name: string,
+  resetToken: string,
+): Promise<{ success: boolean; id?: string; error?: string }> {
+  const resetUrl = `${DASHBOARD_URL}/reset-password?token=${resetToken}`;
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#0D0D1A;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#0D0D1A;">
+    <tr><td align="center" style="padding:32px 16px;">
+      <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;">
+        <tr><td style="padding:32px;background:linear-gradient(135deg,#1A1A2E 0%,#16162A 100%);border-radius:16px 16px 0 0;border-bottom:2px solid #60A5FA;">
+          <span style="color:#60A5FA;font-size:13px;text-transform:uppercase;letter-spacing:2px;font-weight:600;">Password Reset</span>
+          <h1 style="color:#FFFFFF;font-size:24px;margin:8px 0 4px;font-weight:700;">Hi ${name},</h1>
+          <p style="color:#A0A0B8;font-size:15px;margin:0;">We received a request to reset your password.</p>
+        </td></tr>
+        <tr><td style="background-color:#141428;padding:24px 32px;">
+          <p style="color:#E0E0E0;font-size:15px;margin:0 0 20px;">Click the button below to set a new password. This link expires in 1 hour.</p>
+          <div style="text-align:center;">
+            <a href="${resetUrl}" style="display:inline-block;background:linear-gradient(135deg,#3B82F6 0%,#2563EB 100%);color:#FFFFFF;font-size:15px;font-weight:700;text-decoration:none;padding:14px 40px;border-radius:8px;letter-spacing:0.5px;">
+              Reset Password
+            </a>
+          </div>
+          <p style="color:#666;font-size:13px;margin:20px 0 0;text-align:center;">If you didn&rsquo;t request this, you can safely ignore this email.</p>
+        </td></tr>
+        <tr><td style="padding:24px 32px;background:#0F0F22;border-radius:0 0 16px 16px;text-align:center;">
+          <p style="color:#555;font-size:12px;margin:0;">Sent by <span style="color:#60A5FA;">TempoAI</span></p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+  try {
+    const { data, error } = await getResend().emails.send({
+      from: FROM_EMAIL,
+      to,
+      subject: 'Reset your TempoAI password',
+      html,
+    });
+    if (error) {
+      logger.error('Email', `Failed to send reset email to ${to}`, error);
+      return { success: false, error: error.message };
+    }
+    logger.info('Email', `Password reset email sent to ${to} (id: ${data?.id})`);
+    return { success: true, id: data?.id };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error('Email', `Failed to send reset email to ${to}`, err);
+    return { success: false, error: message };
+  }
+}
+
+// ─── Email Verification Email ────────────────────────────────────
+export async function sendVerificationEmail(
+  to: string,
+  name: string,
+  verificationToken: string,
+): Promise<{ success: boolean; id?: string; error?: string }> {
+  const verifyUrl = `${DASHBOARD_URL}/verify-email?token=${verificationToken}`;
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#0D0D1A;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#0D0D1A;">
+    <tr><td align="center" style="padding:32px 16px;">
+      <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;">
+        <tr><td style="padding:32px;background:linear-gradient(135deg,#1A1A2E 0%,#16162A 100%);border-radius:16px 16px 0 0;border-bottom:2px solid #60A5FA;">
+          <span style="color:#60A5FA;font-size:13px;text-transform:uppercase;letter-spacing:2px;font-weight:600;">Verify Your Email</span>
+          <h1 style="color:#FFFFFF;font-size:24px;margin:8px 0 4px;font-weight:700;">Hi ${name},</h1>
+          <p style="color:#A0A0B8;font-size:15px;margin:0;">Please verify your email address to complete your account setup.</p>
+        </td></tr>
+        <tr><td style="background-color:#141428;padding:24px 32px;text-align:center;">
+          <a href="${verifyUrl}" style="display:inline-block;background:linear-gradient(135deg,#3B82F6 0%,#2563EB 100%);color:#FFFFFF;font-size:15px;font-weight:700;text-decoration:none;padding:14px 40px;border-radius:8px;letter-spacing:0.5px;">
+            Verify Email Address
+          </a>
+          <p style="color:#666;font-size:13px;margin:20px 0 0;">If you didn&rsquo;t create this account, you can safely ignore this email.</p>
+        </td></tr>
+        <tr><td style="padding:24px 32px;background:#0F0F22;border-radius:0 0 16px 16px;text-align:center;">
+          <p style="color:#555;font-size:12px;margin:0;">Sent by <span style="color:#60A5FA;">TempoAI</span></p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+  try {
+    const { data, error } = await getResend().emails.send({
+      from: FROM_EMAIL,
+      to,
+      subject: 'Verify your TempoAI email address',
+      html,
+    });
+    if (error) {
+      logger.error('Email', `Failed to send verification email to ${to}`, error);
+      return { success: false, error: error.message };
+    }
+    logger.info('Email', `Verification email sent to ${to} (id: ${data?.id})`);
+    return { success: true, id: data?.id };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error('Email', `Failed to send verification email to ${to}`, err);
+    return { success: false, error: message };
+  }
+}
+
 export function buildMockSummary(): SummaryData {
   return {
     locationId: 'mock-location',

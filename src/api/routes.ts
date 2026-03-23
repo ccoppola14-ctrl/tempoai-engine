@@ -29,6 +29,12 @@ router.use('/billing', billingRouter);
 // ─── Auth ────────────────────────────────────────────────
 router.use('/auth', authRouter);
 
+// Alias: /api/signup → /api/auth/signup (for get-started form)
+router.post('/signup', (req, res, next) => {
+  req.url = '/signup';
+  authRouter(req, res, next);
+});
+
 function paramStr(val: string | string[] | undefined): string {
   return Array.isArray(val) ? val[0] : val ?? '';
 }
@@ -216,6 +222,7 @@ router.get('/square/oauth/callback', async (req: Request, res: Response) => {
           passwordHash,
           name: squareLocations[0]?.businessName ?? 'Square Merchant',
           organizationId: org.id,
+          emailVerified: true,
         },
       });
       logger.info('SquareOAuth', `Auto-created user account: ${userEmail}`);
@@ -1440,6 +1447,7 @@ router.get('/auth/clover/callback', async (req: Request, res: Response) => {
           passwordHash: cloverPasswordHash,
           name: merchant.name || 'Clover Merchant',
           organizationId: org.id,
+          emailVerified: true,
         },
       });
       logger.info('CloverOAuth', `Auto-created user account: ${cloverUserEmail}`);
@@ -1565,6 +1573,7 @@ router.get('/clover/oauth/callback', async (req: Request, res: Response) => {
           passwordHash: appMarketPasswordHash,
           name: merchant.name || 'Clover Merchant',
           organizationId: org.id,
+          emailVerified: true,
         },
       });
       logger.info('CloverAppMarket', `Auto-created user account: ${appMarketUserEmail}`);
