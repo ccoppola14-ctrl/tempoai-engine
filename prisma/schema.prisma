@@ -12,19 +12,19 @@ enum UserRole {
 }
 
 model User {
-  id                  String       @id @default(uuid())
-  email               String       @unique
-  passwordHash        String
-  name                String
-  role                UserRole     @default(OWNER)
-  organizationId      String?
-  organization        Organization? @relation(fields: [organizationId], references: [id])
-  resetToken          String?
-  resetTokenExpiry    DateTime?
-  emailVerified       Boolean      @default(false)
-  verificationToken   String?
-  createdAt           DateTime     @default(now())
-  updatedAt           DateTime     @updatedAt
+  id                String        @id @default(uuid())
+  email             String        @unique
+  passwordHash      String
+  name              String
+  role              UserRole      @default(OWNER)
+  organizationId    String?
+  organization      Organization? @relation(fields: [organizationId], references: [id])
+  resetToken        String?
+  resetTokenExpiry  DateTime?
+  emailVerified     Boolean       @default(false)
+  verificationToken String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
 }
 
 model Organization {
@@ -63,19 +63,19 @@ model Location {
 }
 
 model MenuItem {
-  id           String      @id @default(uuid())
-  locationId   String
-  location     Location    @relation(fields: [locationId], references: [id])
-  squareItemId String?
-  cloverItemId String?
-  name         String
-  category     String
-  price        Float
-  active       Boolean     @default(true)
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
-  orderItems   OrderItem[]
-  aiPatterns   AIPattern[]
+  id              String           @id @default(uuid())
+  locationId      String
+  location        Location         @relation(fields: [locationId], references: [id])
+  squareItemId    String?
+  cloverItemId    String?
+  name            String
+  category        String
+  price           Float
+  active          Boolean          @default(true)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  orderItems      OrderItem[]
+  aiPatterns      AIPattern[]
   recommendations Recommendation[]
 
   @@unique([locationId, squareItemId])
@@ -83,16 +83,16 @@ model MenuItem {
 }
 
 model Order {
-  id         String      @id @default(uuid())
-  locationId String
-  location   Location    @relation(fields: [locationId], references: [id])
+  id            String      @id @default(uuid())
+  locationId    String
+  location      Location    @relation(fields: [locationId], references: [id])
   squareOrderId String?
   cloverOrderId String?
-  timestamp  DateTime
-  total      Float
-  itemCount  Int
-  createdAt  DateTime    @default(now())
-  orderItems OrderItem[]
+  timestamp     DateTime
+  total         Float
+  itemCount     Int
+  createdAt     DateTime    @default(now())
+  orderItems    OrderItem[]
 }
 
 model OrderItem {
@@ -135,24 +135,24 @@ model AIPattern {
 }
 
 model Recommendation {
-  id           String    @id @default(uuid())
-  locationId   String
-  location     Location  @relation(fields: [locationId], references: [id])
-  menuItemId   String
-  menuItem     MenuItem  @relation(fields: [menuItemId], references: [id])
-  type         String
-  triggerType  String
+  id               String    @id @default(uuid())
+  locationId       String
+  location         Location  @relation(fields: [locationId], references: [id])
+  menuItemId       String
+  menuItem         MenuItem  @relation(fields: [menuItemId], references: [id])
+  type             String
+  triggerType      String
   triggerCondition String
-  currentlyActive  Boolean @default(false)
+  currentlyActive  Boolean   @default(false)
   expectedLift     Float
   confidence       Float
   dataPoints       Int
-  message      String
-  channels     String
-  status       String    @default("active")
-  appliedAt    DateTime?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  message          String
+  channels         String
+  status           String    @default("active")
+  appliedAt        DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 }
 
 model SyncLog {
@@ -167,40 +167,40 @@ model SyncLog {
 }
 
 model CloverMerchant {
-  id                    String    @id @default(uuid())
-  merchantId            String    @unique
-  accessToken           String
-  name                  String
-  plan                  String    @default("basic")
-  active                Boolean   @default(true)
-  stripeCustomerId      String?
-  stripeSubscriptionId  String?
-  billingPlan           String?
-  billingStatus         String?
-  installedAt           DateTime  @default(now())
-  uninstalledAt         DateTime?
-  createdAt             DateTime  @default(now())
-  updatedAt             DateTime  @updatedAt
+  id                   String    @id @default(uuid())
+  merchantId           String    @unique
+  accessToken          String
+  name                 String
+  plan                 String    @default("basic")
+  active               Boolean   @default(true)
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  billingPlan          String?
+  billingStatus        String?
+  installedAt          DateTime  @default(now())
+  uninstalledAt        DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 }
 
 model SquareMerchant {
-  id                    String    @id @default(uuid())
-  merchantId            String    @unique
-  accessToken           String
-  refreshToken          String    @default("")
-  expiresAt             DateTime?
-  name                  String
-  email                 String    @default("")
-  locations             String    @default("[]")
-  plan                  String    @default("basic")
-  active                Boolean   @default(true)
-  stripeCustomerId      String?
-  stripeSubscriptionId  String?
-  billingPlan           String?
-  billingStatus         String?
-  installedAt           DateTime  @default(now())
-  createdAt             DateTime  @default(now())
-  updatedAt             DateTime  @updatedAt
+  id                   String    @id @default(uuid())
+  merchantId           String    @unique
+  accessToken          String
+  refreshToken         String    @default("")
+  expiresAt            DateTime?
+  name                 String
+  email                String    @default("")
+  locations            String    @default("[]")
+  plan                 String    @default("basic")
+  active               Boolean   @default(true)
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  billingPlan          String?
+  billingStatus        String?
+  installedAt          DateTime  @default(now())
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 }
 
 model Alert {
@@ -217,20 +217,20 @@ model Alert {
 }
 
 model DailySummary {
-  id              String   @id @default(uuid())
-  locationId      String
-  location        Location @relation(fields: [locationId], references: [id])
-  date            String
-  totalSales      Float
-  orderCount      Int
-  topItems        String
-  laborCostPct    Float?
-  prevWeekSales   Float?
-  prevWeekOrders  Int?
-  changePercent   Float?
-  weatherNote     String?
-  summary         String
-  createdAt       DateTime @default(now())
+  id             String   @id @default(uuid())
+  locationId     String
+  location       Location @relation(fields: [locationId], references: [id])
+  date           String
+  totalSales     Float
+  orderCount     Int
+  topItems       String
+  laborCostPct   Float?
+  prevWeekSales  Float?
+  prevWeekOrders Int?
+  changePercent  Float?
+  weatherNote    String?
+  summary        String
+  createdAt      DateTime @default(now())
 
   @@unique([locationId, date])
 }

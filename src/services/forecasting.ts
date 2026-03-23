@@ -1,5 +1,6 @@
 import prisma from '../db/client';
 import { logger } from '../utils/logger';
+import { getEventImpactForDate } from '../integrations/events';
 
 interface DayForecast {
   date: string;
@@ -10,6 +11,7 @@ interface DayForecast {
     dayOfWeek: { name: string; avgSales: number; avgOrders: number };
     weather: { condition: string; temperature: number; impact: number } | null;
     trend: { direction: string; percentChange: number };
+    event: { name: string; type: string; impact: number } | null;
   };
   staffing: { recommended: number; reason: string };
 }
@@ -193,6 +195,13 @@ export async function generateForecast(locationId: string): Promise<DayForecast[
       predictedOrders = Math.round(predictedOrders * (1 + weatherImpact));
     }
 
+    // Apply event impact
+    const eventImpact = getEventImpactForDate(dateStr);
+    if (eventImpact.event) {
+      predictedSales *= eventImpact.multiplier;
+      predictedOrders = Math.round(predictedOrders * eventImpact.multiplier);
+    }
+
     // Ensure non-negative
     predictedSales = Math.max(0, Math.round(predictedSales * 100) / 100);
     predictedOrders = Math.max(0, predictedOrders);
@@ -218,6 +227,9 @@ export async function generateForecast(locationId: string): Promise<DayForecast[
         direction: trendPercent > 2 ? 'up' : trendPercent < -2 ? 'down' : 'stable',
         percentChange: Math.round(trendPercent * 10) / 10,
       },
+      event: eventImpact.event
+        ? { name: eventImpact.event.name, type: eventImpact.event.type, impact: Math.round((eventImpact.multiplier - 1) * 100) }
+        : null,
     };
 
     const staffing = getStaffingRecommendation(predictedSales, dayName);

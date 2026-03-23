@@ -1,5 +1,7 @@
 import prisma from '../db/client';
 import { logger } from '../utils/logger';
+import { getBeforeAfterSnippet } from './analytics';
+import { getUpcomingEvents } from '../integrations/events';
 
 export interface TopItem {
   name: string;
@@ -19,6 +21,10 @@ export interface SummaryData {
   prevWeekOrders: number | null;
   changePercent: number | null;
   weatherNote: string | null;
+  weatherImpactNote: string | null;
+  topRecommendation: string | null;
+  beforeAfterSnippet: string | null;
+  upcomingEvents: string | null;
 }
 
 function startOfDay(date: Date): Date {
@@ -101,8 +107,53 @@ export async function generateDailySummary(locationId: string, date: Date = new 
   });
 
   let weatherNote: string | null = null;
+  let weatherImpactNote: string | null = null;
   if (weatherSnapshot) {
     weatherNote = `${weatherSnapshot.conditions}, ${Math.round(weatherSnapshot.temperature)}°F, ${weatherSnapshot.precipitation > 0 ? `${weatherSnapshot.precipitation}mm precip` : 'no precipitation'}`;
+
+    // Weather impact note
+    const cond = weatherSnapshot.conditions.toLowerCase();
+    const temp = weatherSnapshot.temperature;
+    const impacts: string[] = [];
+    if (cond.includes('rain') || cond.includes('drizzle')) impacts.push('rain reducing foot traffic (~-10%)');
+    if (cond.includes('snow') || cond.includes('blizzard')) impacts.push('snow significantly reducing traffic (~-20%)');
+    if (cond.includes('thunder') || cond.includes('storm')) impacts.push('storms keeping customers home (~-15%)');
+    if (cond.includes('sunny') || cond.includes('clear')) impacts.push('clear skies boosting patio/walk-in traffic (~+5%)');
+    if (temp < 25) impacts.push('extreme cold suppressing dine-in (~-15%)');
+    else if (temp > 95) impacts.push('extreme heat shifting orders to delivery (~-10%)');
+    if (cond.includes('rain') || cond.includes('snow') || cond.includes('storm')) {
+      impacts.push('comfort food promos recommended');
+    }
+    weatherImpactNote = impacts.length > 0 ? impacts.join('; ') : 'Normal weather — no significant impact expected';
+  }
+
+  // Top AI recommendation that fired today
+  let topRecommendation: string | null = null;
+  try {
+    const topRec = await prisma.recommendation.findFirst({
+      where: { locationId, currentlyActive: true },
+      orderBy: { expectedLift: 'desc' },
+      include: { menuItem: true },
+    });
+    if (topRec) {
+      topRecommendation = `${topRec.type.toUpperCase()}: ${topRec.menuItem.name} — ${topRec.message} (expected +${topRec.expectedLift.toFixed(0)}%)`;
+    }
+  } catch {
+    // Non-critical
+  }
+
+  // Before/after comparison snippet
+  const beforeAfterSnippet = await getBeforeAfterSnippet(locationId);
+
+  // Upcoming events
+  let upcomingEvents: string | null = null;
+  try {
+    const events = getUpcomingEvents(location.lat, location.lng, 7);
+    if (events.length > 0) {
+      upcomingEvents = events.map(e => `${e.date}: ${e.name} (${e.impact_multiplier > 1 ? '+' : ''}${Math.round((e.impact_multiplier - 1) * 100)}%)`).join(', ');
+    }
+  } catch {
+    // Non-critical
   }
 
   const dateStr = dayStart.toISOString().split('T')[0];
@@ -119,6 +170,10 @@ export async function generateDailySummary(locationId: string, date: Date = new 
     prevWeekOrders: prevWeekOrders > 0 ? prevWeekOrders : null,
     changePercent: changePercent !== null ? Math.round(changePercent * 10) / 10 : null,
     weatherNote,
+    weatherImpactNote,
+    topRecommendation,
+    beforeAfterSnippet,
+    upcomingEvents,
   };
 
   // Build human-readable summary
@@ -135,6 +190,18 @@ export async function generateDailySummary(locationId: string, date: Date = new 
   }
   if (weatherNote) {
     lines.push(`Weather: ${weatherNote}`);
+  }
+  if (weatherImpactNote) {
+    lines.push(`Weather Impact: ${weatherImpactNote}`);
+  }
+  if (topRecommendation) {
+    lines.push(`Top AI Rec: ${topRecommendation}`);
+  }
+  if (beforeAfterSnippet) {
+    lines.push(beforeAfterSnippet);
+  }
+  if (upcomingEvents) {
+    lines.push(`Upcoming Events: ${upcomingEvents}`);
   }
   const summary = lines.join('\n');
 

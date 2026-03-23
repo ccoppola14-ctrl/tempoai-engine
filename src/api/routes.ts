@@ -21,6 +21,9 @@ import { generateForecast } from '../services/forecasting';
 import { upsertIngredientCosts, getFoodCostAnalysis, getFoodCostSummary } from '../services/food-cost';
 import { getReviews, generateDraftResponse } from '../services/reviews';
 import { sendDailySummary, buildMockSummary } from '../services/email';
+import { getBeforeAfterRevenue, getAttribution } from '../services/analytics';
+import { generateNotification } from '../services/notifications';
+import { getUpcomingEvents, EVENT_TYPE_RANGES } from '../integrations/events';
 
 const router = Router();
 
@@ -1876,5 +1879,74 @@ router.post('/email/test-digest', async (req: Request, res: Response) => {
   } catch (err) {
     logger.error('Email', 'Failed to send test digest', err);
     res.status(500).json({ error: 'Failed to send test digest', message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// ─── Before / After Revenue Dashboard ────────────────────────────
+
+// GET /api/analytics/before-after/:locationId — revenue lift since install
+router.get('/analytics/before-after/:locationId', async (req: Request, res: Response) => {
+  const locationId = paramStr(req.params.locationId);
+  try {
+    const result = await getBeforeAfterRevenue(locationId);
+    res.json(result);
+  } catch (err) {
+    logger.error('Analytics', 'Failed to compute before/after revenue', err);
+    res.status(500).json({ error: 'Failed to compute before/after revenue', message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// GET /api/analytics/attribution/:locationId — recommendation attribution
+router.get('/analytics/attribution/:locationId', async (req: Request, res: Response) => {
+  const locationId = paramStr(req.params.locationId);
+  try {
+    const result = await getAttribution(locationId);
+    res.json(result);
+  } catch (err) {
+    logger.error('Analytics', 'Failed to compute attribution', err);
+    res.status(500).json({ error: 'Failed to compute attribution', message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// ─── Daily Summary Notification ──────────────────────────────────
+
+// POST /api/notifications/daily-summary/:locationId — generate SMS + email formatted summary
+router.post('/notifications/daily-summary/:locationId', async (req: Request, res: Response) => {
+  const locationId = paramStr(req.params.locationId);
+  try {
+    const result = await generateNotification(locationId);
+    res.json({
+      sms: result.sms,
+      sms_length: result.sms.length,
+      email: result.email,
+      summary: result.summary,
+    });
+  } catch (err) {
+    logger.error('Notifications', 'Failed to generate notification', err);
+    res.status(500).json({ error: 'Failed to generate notification', message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// ─── Local Events ────────────────────────────────────────────────
+
+// GET /api/events/:locationId — upcoming events that may affect the location
+router.get('/events/:locationId', async (req: Request, res: Response) => {
+  const locationId = paramStr(req.params.locationId);
+  const days = parseInt(req.query.days as string) || 14;
+
+  try {
+    const location = await prisma.location.findUniqueOrThrow({ where: { id: locationId } });
+    const events = getUpcomingEvents(location.lat, location.lng, days);
+
+    res.json({
+      location_id: locationId,
+      location_name: location.name,
+      days_ahead: days,
+      events,
+      event_type_ranges: EVENT_TYPE_RANGES,
+    });
+  } catch (err) {
+    logger.error('Events', 'Failed to fetch events', err);
+    res.status(500).json({ error: 'Failed to fetch events', message: err instanceof Error ? err.message : String(err) });
   }
 });

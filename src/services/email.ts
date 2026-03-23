@@ -477,5 +477,9 @@ export function buildMockSummary(): SummaryData {
     prevWeekOrders: 132,
     changePercent: 14.5,
     weatherNote: 'Partly Cloudy, 72°F, no precipitation',
+    weatherImpactNote: 'clear skies boosting patio/walk-in traffic (~+5%)',
+    topRecommendation: 'PROMOTE: Truffle Burger — strong lunch performer on clear days (expected +23%)',
+    beforeAfterSnippet: 'Since TempoAi (45d): avg daily revenue up 12.3% ($3,200 -> $3,594)',
+    upcomingEvents: null,
   };
 }
