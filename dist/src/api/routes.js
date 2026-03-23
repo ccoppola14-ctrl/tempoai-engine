@@ -7,6 +7,7 @@ const express_1 = require("express");
 const crypto_1 = __importDefault(require("crypto"));
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const client_1 = __importDefault(require("../db/client"));
+const encryption_1 = require("../utils/encryption");
 const client_2 = require("../integrations/square/client");
 const sync_1 = require("../integrations/square/sync");
 const client_3 = require("../integrations/weather/client");
@@ -30,6 +31,11 @@ const router = (0, express_1.Router)();
 router.use('/billing', billing_1.default);
 // ─── Auth ────────────────────────────────────────────────
 router.use('/auth', auth_1.default);
+// Alias: /api/signup → /api/auth/signup (for get-started form)
+router.post('/signup', (req, res, next) => {
+    req.url = '/signup';
+    (0, auth_1.default)(req, res, next);
+});
 function paramStr(val) {
     return Array.isArray(val) ? val[0] : val ?? '';
 }
@@ -97,20 +103,22 @@ router.get('/square/oauth/callback', async (req, res) => {
         logger_1.logger.info('SquareOAuth', `Got tokens for merchant ${tokens.merchantId}`);
         // Fetch merchant locations from Square
         const squareLocations = await (0, client_2.listLocations)(tokens.accessToken);
-        // Store SquareMerchant record
+        // Store SquareMerchant record (tokens encrypted at rest)
+        const encryptedAccessToken = (0, encryption_1.encrypt)(tokens.accessToken);
+        const encryptedRefreshToken = (0, encryption_1.encrypt)(tokens.refreshToken);
         await client_1.default.squareMerchant.upsert({
             where: { merchantId: tokens.merchantId },
             update: {
-                accessToken: tokens.accessToken,
-                refreshToken: tokens.refreshToken,
+                accessToken: encryptedAccessToken,
+                refreshToken: encryptedRefreshToken,
                 expiresAt: tokens.expiresAt,
                 locations: JSON.stringify(squareLocations.map((l) => ({ id: l.id, name: l.name }))),
                 active: true,
             },
             create: {
                 merchantId: tokens.merchantId,
-                accessToken: tokens.accessToken,
-                refreshToken: tokens.refreshToken,
+                accessToken: encryptedAccessToken,
+                refreshToken: encryptedRefreshToken,
                 expiresAt: tokens.expiresAt,
                 name: squareLocations[0]?.businessName ?? 'Square Merchant',
                 locations: JSON.stringify(squareLocations.map((l) => ({ id: l.id, name: l.name }))),
@@ -165,7 +173,7 @@ router.get('/square/oauth/callback', async (req, res) => {
                         lng,
                         timezone: sl.timezone ?? 'America/New_York',
                         squareMerchantId: sl.id,
-                        squareAccessToken: tokens.accessToken,
+                        squareAccessToken: encryptedAccessToken,
                     },
                 });
             }
@@ -173,7 +181,7 @@ router.get('/square/oauth/callback', async (req, res) => {
                 location = await client_1.default.location.update({
                     where: { id: location.id },
                     data: {
-                        squareAccessToken: tokens.accessToken,
+                        squareAccessToken: encryptedAccessToken,
                         name: sl.name ?? location.name,
                         address: addressStr || location.address,
                         lat: lat || location.lat,
@@ -196,6 +204,7 @@ router.get('/square/oauth/callback', async (req, res) => {
                     passwordHash,
                     name: squareLocations[0]?.businessName ?? 'Square Merchant',
                     organizationId: org.id,
+                    emailVerified: true,
                 },
             });
             logger_1.logger.info('SquareOAuth', `Auto-created user account: ${userEmail}`);
@@ -763,6 +772,7 @@ router.post('/onboard/square', async (req, res) => {
             });
         }
         // Create or update the location in our DB
+        const encryptedSquareToken = (0, encryption_1.encrypt)(accessToken);
         if (!location) {
             location = await client_1.default.location.create({
                 data: {
@@ -781,7 +791,7 @@ router.post('/onboard/square', async (req, res) => {
                     lng: squareLocation.coordinates?.longitude ?? 0,
                     timezone: squareLocation.timezone ?? 'America/New_York',
                     squareMerchantId: locationId,
-                    squareAccessToken: accessToken,
+                    squareAccessToken: encryptedSquareToken,
                 },
             });
         }
@@ -789,7 +799,7 @@ router.post('/onboard/square', async (req, res) => {
             location = await client_1.default.location.update({
                 where: { id: location.id },
                 data: {
-                    squareAccessToken: accessToken,
+                    squareAccessToken: encryptedSquareToken,
                     name: squareLocation.name ?? location.name,
                 },
             });
@@ -900,6 +910,7 @@ router.post('/onboard/clover', async (req, res) => {
             });
         }
         // Create or update location
+        const encryptedCloverToken = (0, encryption_1.encrypt)(apiToken);
         if (!location) {
             location = await client_1.default.location.create({
                 data: {
@@ -914,7 +925,7 @@ router.post('/onboard/clover', async (req, res) => {
                     lng: 0,
                     timezone: 'America/New_York',
                     cloverMerchantId: merchantId,
-                    cloverApiToken: apiToken,
+                    cloverApiToken: encryptedCloverToken,
                 },
             });
         }
@@ -922,7 +933,7 @@ router.post('/onboard/clover', async (req, res) => {
             location = await client_1.default.location.update({
                 where: { id: location.id },
                 data: {
-                    cloverApiToken: apiToken,
+                    cloverApiToken: encryptedCloverToken,
                     name: merchant.name || location.name,
                 },
             });
@@ -1291,6 +1302,7 @@ router.get('/auth/clover/callback', async (req, res) => {
                     passwordHash: cloverPasswordHash,
                     name: merchant.name || 'Clover Merchant',
                     organizationId: org.id,
+                    emailVerified: true,
                 },
             });
             logger_1.logger.info('CloverOAuth', `Auto-created user account: ${cloverUserEmail}`);
@@ -1401,6 +1413,7 @@ router.get('/clover/oauth/callback', async (req, res) => {
                     passwordHash: appMarketPasswordHash,
                     name: merchant.name || 'Clover Merchant',
                     organizationId: org.id,
+                    emailVerified: true,
                 },
             });
             logger_1.logger.info('CloverAppMarket', `Auto-created user account: ${appMarketUserEmail}`);

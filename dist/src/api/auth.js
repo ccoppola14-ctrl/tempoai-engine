@@ -4,10 +4,13 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
+const crypto_1 = __importDefault(require("crypto"));
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const client_1 = __importDefault(require("../db/client"));
 const auth_1 = require("./middleware/auth");
+const email_1 = require("../services/email");
+const logger_1 = require("../utils/logger");
 const router = (0, express_1.Router)();
 const JWT_SECRET = process.env.JWT_SECRET || 'tempoai-dev-secret';
 function signToken(user) {
@@ -100,6 +103,165 @@ router.get('/me', auth_1.authMiddleware, async (req, res) => {
     catch (err) {
         console.error('Me error:', err);
         res.status(500).json({ error: 'Failed to fetch user' });
+    }
+});
+// ─── Helper: generate readable temp password ────────────────────
+function generateTempPassword() {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const part = () => Array.from({ length: 4 }, () => chars[crypto_1.default.randomInt(chars.length)]).join('');
+    return `tempo-${part()}-${part()}`;
+}
+// ─── POST /signup (get-started form → auto account creation) ────
+router.post('/signup', async (req, res) => {
+    try {
+        const { name, email, phone, restaurant, locations, pos, notes } = req.body;
+        if (!name || !email || !restaurant) {
+            res.status(400).json({ error: 'Name, email, and restaurant name are required' });
+            return;
+        }
+        const existing = await client_1.default.user.findUnique({ where: { email } });
+        if (existing) {
+            res.status(409).json({ error: 'An account with this email already exists' });
+            return;
+        }
+        const tempPassword = generateTempPassword();
+        const passwordHash = await bcryptjs_1.default.hash(tempPassword, 12);
+        const verificationToken = crypto_1.default.randomUUID();
+        // Create organization
+        const org = await client_1.default.organization.create({
+            data: { name: restaurant },
+        });
+        // Create user
+        const user = await client_1.default.user.create({
+            data: {
+                email,
+                passwordHash,
+                name,
+                organizationId: org.id,
+                emailVerified: false,
+                verificationToken,
+            },
+        });
+        // Send welcome email (non-blocking)
+        (0, email_1.sendWelcomeEmail)(email, name, tempPassword, verificationToken).catch((err) => logger_1.logger.error('Email', 'Failed to send welcome email', err));
+        // Send lead notification to Chuck (non-blocking)
+        (0, email_1.sendNewLeadNotification)({
+            name,
+            email,
+            phone: phone || '',
+            restaurant,
+            locations: locations || '1',
+            pos: pos || 'Unknown',
+            notes: notes || '',
+        }).catch((err) => logger_1.logger.error('Email', 'Failed to send lead notification', err));
+        logger_1.logger.info('Signup', `New account created: ${email} (org: ${restaurant})`);
+        res.status(201).json({ success: true, userId: user.id, organizationId: org.id });
+    }
+    catch (err) {
+        console.error('Signup error:', err);
+        res.status(500).json({ error: 'Signup failed' });
+    }
+});
+// ─── POST /forgot-password ──────────────────────────────────────
+router.post('/forgot-password', async (req, res) => {
+    try {
+        const { email } = req.body;
+        if (!email) {
+            res.status(400).json({ error: 'Email is required' });
+            return;
+        }
+        // Always return success to prevent email enumeration
+        const user = await client_1.default.user.findUnique({ where: { email } });
+        if (!user) {
+            res.json({ success: true });
+            return;
+        }
+        const resetToken = crypto_1.default.randomUUID();
+        const resetTokenExpiry = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+        await client_1.default.user.update({
+            where: { id: user.id },
+            data: { resetToken, resetTokenExpiry },
+        });
+        await (0, email_1.sendPasswordResetEmail)(email, user.name, resetToken);
+        logger_1.logger.info('Auth', `Password reset requested for ${email}`);
+        res.json({ success: true });
+    }
+    catch (err) {
+        console.error('Forgot password error:', err);
+        res.status(500).json({ error: 'Failed to process request' });
+    }
+});
+// ─── POST /reset-password ───────────────────────────────────────
+router.post('/reset-password', async (req, res) => {
+    try {
+        const { token, password } = req.body;
+        if (!token || !password) {
+            res.status(400).json({ error: 'Token and password are required' });
+            return;
+        }
+        if (password.length < 8) {
+            res.status(400).json({ error: 'Password must be at least 8 characters' });
+            return;
+        }
+        const user = await client_1.default.user.findFirst({
+            where: {
+                resetToken: token,
+                resetTokenExpiry: { gte: new Date() },
+            },
+        });
+        if (!user) {
+            res.status(400).json({ error: 'Invalid or expired reset token' });
+            return;
+        }
+        const passwordHash = await bcryptjs_1.default.hash(password, 12);
+        await client_1.default.user.update({
+            where: { id: user.id },
+            data: {
+                passwordHash,
+                resetToken: null,
+                resetTokenExpiry: null,
+            },
+        });
+        logger_1.logger.info('Auth', `Password reset completed for ${user.email}`);
+        res.json({ success: true });
+    }
+    catch (err) {
+        console.error('Reset password error:', err);
+        res.status(500).json({ error: 'Failed to reset password' });
+    }
+});
+// ─── POST /verify-email ─────────────────────────────────────────
+router.post('/verify-email', async (req, res) => {
+    try {
+        const { token } = req.body;
+        if (!token) {
+            res.status(400).json({ error: 'Verification token is required' });
+            return;
+        }
+        const user = await client_1.default.user.findFirst({
+            where: { verificationToken: token },
+        });
+        if (!user) {
+            res.status(400).json({ error: 'Invalid verification token' });
+            return;
+        }
+        if (user.emailVerified) {
+            res.json({ success: true, alreadyVerified: true });
+            return;
+        }
+        await client_1.default.user.update({
+            where: { id: user.id },
+            data: {
+                emailVerified: true,
+                verificationToken: null,
+            },
+        });
+        logger_1.logger.info('Auth', `Email verified for ${user.email}`);
+        res.json({ success: true });
+    }
+    catch (err) {
+        console.error('Verify email error:', err);
+        res.status(500).json({ error: 'Failed to verify email' });
     }
 });
 exports.default = router;

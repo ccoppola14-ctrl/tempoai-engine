@@ -11,6 +11,7 @@ exports.initialCloverSync = initialCloverSync;
 exports.startCloverSyncSchedule = startCloverSyncSchedule;
 const node_cron_1 = __importDefault(require("node-cron"));
 const client_1 = __importDefault(require("../../db/client"));
+const encryption_1 = require("../../utils/encryption");
 const logger_1 = require("../../utils/logger");
 const client_2 = require("./client");
 const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000;
@@ -37,7 +38,7 @@ async function syncCloverCatalog(locationId) {
         return 0;
     }
     try {
-        const items = await (0, client_2.listInventory)(location.cloverMerchantId, location.cloverApiToken);
+        const items = await (0, client_2.listInventory)(location.cloverMerchantId, (0, encryption_1.decrypt)(location.cloverApiToken));
         let count = 0;
         for (const item of items) {
             if (item.hidden)
@@ -95,7 +96,7 @@ async function syncCloverOrders(locationId, since) {
     }
     try {
         const sinceDate = since ?? await getSyncSince(locationId);
-        const orders = await (0, client_2.listOrders)(location.cloverMerchantId, location.cloverApiToken, sinceDate);
+        const orders = await (0, client_2.listOrders)(location.cloverMerchantId, (0, encryption_1.decrypt)(location.cloverApiToken), sinceDate);
         let count = 0;
         // Build a lookup of cloverItemId -> menuItem.id for this location
         const menuItems = await client_1.default.menuItem.findMany({
@@ -114,7 +115,7 @@ async function syncCloverOrders(locationId, since) {
             if (existingOrder)
                 continue;
             // Fetch line items for this order
-            const lineItems = await (0, client_2.listOrderLineItems)(location.cloverMerchantId, order.id, location.cloverApiToken);
+            const lineItems = await (0, client_2.listOrderLineItems)(location.cloverMerchantId, order.id, (0, encryption_1.decrypt)(location.cloverApiToken));
             // Filter line items to those with a matching menu item
             const validLineItems = lineItems.filter((li) => li.item?.id && menuItemMap.has(li.item.id));
             await client_1.default.order.create({
@@ -165,7 +166,7 @@ async function syncCloverPayments(locationId, since) {
         return 0;
     }
     const sinceDate = since ?? await getSyncSince(locationId);
-    const payments = await (0, client_2.listPayments)(location.cloverMerchantId, location.cloverApiToken, sinceDate);
+    const payments = await (0, client_2.listPayments)(location.cloverMerchantId, (0, encryption_1.decrypt)(location.cloverApiToken), sinceDate);
     logger_1.logger.info('CloverSync', `Fetched ${payments.length} payments for ${locationId}`);
     return payments.length;
 }

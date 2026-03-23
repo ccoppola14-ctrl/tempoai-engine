@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import rateLimit from 'express-rate-limit';
 import router from './api/routes';
 import { requestLogger, errorHandler } from './api/middleware';
 import { startSyncSchedule } from './integrations/square/sync';
@@ -32,6 +33,29 @@ app.use(cors({
 }));
 app.use(express.json());
 app.use(requestLogger);
+
+// Rate limiting — global: 100 req / 15 min per IP
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 100,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skip: (req) => req.path === '/api/health',
+  message: { error: 'Too many requests, please try again later' },
+});
+app.use(globalLimiter);
+
+// Rate limiting — auth endpoints: 10 req / 15 min per IP
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later' },
+});
+app.use('/api/auth', authLimiter);
+app.use('/api/signup', authLimiter);
+app.use('/api/login', authLimiter);
 
 // Routes
 app.use('/api', router);

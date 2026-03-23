@@ -39,6 +39,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
+const express_rate_limit_1 = __importDefault(require("express-rate-limit"));
 const routes_1 = __importDefault(require("./api/routes"));
 const middleware_1 = require("./api/middleware");
 const sync_1 = require("./integrations/square/sync");
@@ -68,6 +69,27 @@ app.use((0, cors_1.default)({
 }));
 app.use(express_1.default.json());
 app.use(middleware_1.requestLogger);
+// Rate limiting — global: 100 req / 15 min per IP
+const globalLimiter = (0, express_rate_limit_1.default)({
+    windowMs: 15 * 60 * 1000,
+    limit: 100,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    skip: (req) => req.path === '/api/health',
+    message: { error: 'Too many requests, please try again later' },
+});
+app.use(globalLimiter);
+// Rate limiting — auth endpoints: 10 req / 15 min per IP
+const authLimiter = (0, express_rate_limit_1.default)({
+    windowMs: 15 * 60 * 1000,
+    limit: 10,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    message: { error: 'Too many requests, please try again later' },
+});
+app.use('/api/auth', authLimiter);
+app.use('/api/signup', authLimiter);
+app.use('/api/login', authLimiter);
 // Routes
 app.use('/api', routes_1.default);
 // Error handler

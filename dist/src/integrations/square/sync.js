@@ -11,6 +11,7 @@ exports.initialSync = initialSync;
 exports.startSyncSchedule = startSyncSchedule;
 const node_cron_1 = __importDefault(require("node-cron"));
 const client_1 = __importDefault(require("../../db/client"));
+const encryption_1 = require("../../utils/encryption");
 const logger_1 = require("../../utils/logger");
 const client_2 = require("./client");
 const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000;
@@ -37,7 +38,7 @@ async function syncLocationCatalog(locationId) {
         return 0;
     }
     try {
-        const catalogItems = await (0, client_2.listCatalog)(location.squareAccessToken);
+        const catalogItems = await (0, client_2.listCatalog)((0, encryption_1.decrypt)(location.squareAccessToken));
         let count = 0;
         for (const item of catalogItems) {
             await client_1.default.menuItem.upsert({
@@ -92,7 +93,7 @@ async function syncLocationOrders(locationId, since) {
     }
     try {
         const sinceDate = since ?? await getSyncSince(locationId);
-        const orders = await (0, client_2.listOrders)(location.squareMerchantId, sinceDate, undefined, location.squareAccessToken);
+        const orders = await (0, client_2.listOrders)(location.squareMerchantId, sinceDate, undefined, (0, encryption_1.decrypt)(location.squareAccessToken));
         let count = 0;
         // Build a lookup of squareItemId -> menuItem.id for this location
         const menuItems = await client_1.default.menuItem.findMany({
@@ -160,7 +161,7 @@ async function syncLocationPayments(locationId, since) {
         return 0;
     }
     const sinceDate = since ?? await getSyncSince(locationId);
-    const payments = await (0, client_2.listPayments)(location.squareMerchantId, sinceDate, undefined, location.squareAccessToken);
+    const payments = await (0, client_2.listPayments)(location.squareMerchantId, sinceDate, undefined, (0, encryption_1.decrypt)(location.squareAccessToken));
     logger_1.logger.info('SquareSync', `Fetched ${payments.length} payments for ${locationId}`);
     return payments.length;
 }

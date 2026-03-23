@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from 'express';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import prisma from '../db/client';
+import { encrypt } from '../utils/encryption';
 import { getOAuthUrl, exchangeOAuthCode, listLocations as listSquareLocations, listCatalog, getMerchantInfo } from '../integrations/square/client';
 import { syncLocationCatalog, syncLocationOrders, syncAllLocations, initialSync } from '../integrations/square/sync';
 import { snapshotWeather } from '../integrations/weather/client';
@@ -117,20 +118,22 @@ router.get('/square/oauth/callback', async (req: Request, res: Response) => {
     // Fetch merchant locations from Square
     const squareLocations = await listSquareLocations(tokens.accessToken);
 
-    // Store SquareMerchant record
+    // Store SquareMerchant record (tokens encrypted at rest)
+    const encryptedAccessToken = encrypt(tokens.accessToken);
+    const encryptedRefreshToken = encrypt(tokens.refreshToken);
     await prisma.squareMerchant.upsert({
       where: { merchantId: tokens.merchantId },
       update: {
-        accessToken: tokens.accessToken,
-        refreshToken: tokens.refreshToken,
+        accessToken: encryptedAccessToken,
+        refreshToken: encryptedRefreshToken,
         expiresAt: tokens.expiresAt,
         locations: JSON.stringify(squareLocations.map((l) => ({ id: l.id, name: l.name }))),
         active: true,
       },
       create: {
         merchantId: tokens.merchantId,
-        accessToken: tokens.accessToken,
-        refreshToken: tokens.refreshToken,
+        accessToken: encryptedAccessToken,
+        refreshToken: encryptedRefreshToken,
         expiresAt: tokens.expiresAt,
         name: squareLocations[0]?.businessName ?? 'Square Merchant',
         locations: JSON.stringify(squareLocations.map((l) => ({ id: l.id, name: l.name }))),
@@ -190,14 +193,14 @@ router.get('/square/oauth/callback', async (req: Request, res: Response) => {
             lng,
             timezone: sl.timezone ?? 'America/New_York',
             squareMerchantId: sl.id,
-            squareAccessToken: tokens.accessToken,
+            squareAccessToken: encryptedAccessToken,
           },
         });
       } else {
         location = await prisma.location.update({
           where: { id: location.id },
           data: {
-            squareAccessToken: tokens.accessToken,
+            squareAccessToken: encryptedAccessToken,
             name: sl.name ?? location.name,
             address: addressStr || location.address,
             lat: lat || location.lat,
@@ -863,6 +866,7 @@ router.post('/onboard/square', async (req: Request, res: Response) => {
     }
 
     // Create or update the location in our DB
+    const encryptedSquareToken = encrypt(accessToken);
     if (!location) {
       location = await prisma.location.create({
         data: {
@@ -881,14 +885,14 @@ router.post('/onboard/square', async (req: Request, res: Response) => {
           lng: squareLocation.coordinates?.longitude ?? 0,
           timezone: squareLocation.timezone ?? 'America/New_York',
           squareMerchantId: locationId,
-          squareAccessToken: accessToken,
+          squareAccessToken: encryptedSquareToken,
         },
       });
     } else {
       location = await prisma.location.update({
         where: { id: location.id },
         data: {
-          squareAccessToken: accessToken,
+          squareAccessToken: encryptedSquareToken,
           name: squareLocation.name ?? location.name,
         },
       });
@@ -1015,6 +1019,7 @@ router.post('/onboard/clover', async (req: Request, res: Response) => {
     }
 
     // Create or update location
+    const encryptedCloverToken = encrypt(apiToken);
     if (!location) {
       location = await prisma.location.create({
         data: {
@@ -1029,14 +1034,14 @@ router.post('/onboard/clover', async (req: Request, res: Response) => {
           lng: 0,
           timezone: 'America/New_York',
           cloverMerchantId: merchantId,
-          cloverApiToken: apiToken,
+          cloverApiToken: encryptedCloverToken,
         },
       });
     } else {
       location = await prisma.location.update({
         where: { id: location.id },
         data: {
-          cloverApiToken: apiToken,
+          cloverApiToken: encryptedCloverToken,
           name: merchant.name || location.name,
         },
       });
