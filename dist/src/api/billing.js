@@ -55,7 +55,7 @@ router.post('/create-checkout', async (req, res) => {
                     quantity: locationCount,
                 }],
             metadata: { merchantId, plan },
-            success_url: `${process.env.ENGINE_URL || 'https://tempoai-engine.onrender.com'}/api/billing/success?session_id={CHECKOUT_SESSION_ID}`,
+            success_url: `${process.env.ENGINE_URL || 'https://api.usetempoai.com'}/api/billing/success?session_id={CHECKOUT_SESSION_ID}`,
             cancel_url: `${dashboardUrl}/subscribe`,
         });
         logger_1.logger.info('Billing', `Checkout session created for merchant ${merchantId} (${plan})`);

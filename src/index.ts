@@ -25,6 +25,8 @@ app.use(cors({
     /localhost:\d+/,
     /\.vercel\.app$/,
     /\.trycloudflare\.com$/,
+    'https://usetempoai.com',
+    /usetempoai\.com$/,
   ],
   credentials: true,
 }));

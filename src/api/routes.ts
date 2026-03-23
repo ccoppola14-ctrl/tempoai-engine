@@ -66,7 +66,7 @@ router.get('/auth/square/callback', async (req: Request, res: Response) => {
 // GET /square/oauth/authorize — redirects merchant to Square's OAuth page
 router.get('/square/oauth/authorize', (req: Request, res: Response) => {
   const redirectUri = req.query.redirect_uri as string | undefined;
-  const callbackUrl = `${process.env.ENGINE_URL || 'https://tempoai-engine.onrender.com'}/api/square/oauth/callback`;
+  const callbackUrl = `${process.env.ENGINE_URL || 'https://api.usetempoai.com'}/api/square/oauth/callback`;
 
   // Store the dashboard redirect_uri so we can send the merchant back after OAuth
   const state = redirectUri ? Buffer.from(redirectUri).toString('base64') : '';
@@ -96,7 +96,7 @@ router.get('/square/oauth/callback', async (req: Request, res: Response) => {
   }
 
   try {
-    const callbackUrl = `${process.env.ENGINE_URL || 'https://tempoai-engine.onrender.com'}/api/square/oauth/callback`;
+    const callbackUrl = `${process.env.ENGINE_URL || 'https://api.usetempoai.com'}/api/square/oauth/callback`;
     const tokens = await exchangeOAuthCode(code, callbackUrl);
 
     logger.info('SquareOAuth', `Got tokens for merchant ${tokens.merchantId}`);
@@ -1271,7 +1271,7 @@ router.get('/auth/clover/connect', (_req: Request, res: Response) => {
     res.status(500).json({ error: 'CLOVER_APP_ID not configured' });
     return;
   }
-  const redirectUri = `${process.env.ENGINE_URL || 'https://tempoai-engine.onrender.com'}/api/auth/clover/callback`;
+  const redirectUri = `${process.env.ENGINE_URL || 'https://api.usetempoai.com'}/api/auth/clover/callback`;
   const authUrl = `${getCloverOAuthBaseUrl()}/oauth/v2/authorize?client_id=${CLOVER_APP_ID}&redirect_uri=${encodeURIComponent(redirectUri)}`;
   res.redirect(authUrl);
 });

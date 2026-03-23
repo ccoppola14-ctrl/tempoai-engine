@@ -8,8 +8,8 @@ function getResend(): Resend {
   return new Resend(key);
 }
 
-const DASHBOARD_URL = 'https://tempoai-three.vercel.app';
-const FROM_EMAIL = 'TempoAI <digest@tempoai.app>';
+const DASHBOARD_URL = 'https://usetempoai.com';
+const FROM_EMAIL = 'TempoAi <onboarding@resend.dev>';
 
 function formatCurrency(amount: number): string {
   return `$${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;

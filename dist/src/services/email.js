@@ -10,8 +10,8 @@ function getResend() {
         throw new Error('RESEND_API_KEY is not set');
     return new resend_1.Resend(key);
 }
-const DASHBOARD_URL = 'https://tempoai-three.vercel.app';
-const FROM_EMAIL = 'TempoAI <digest@tempoai.app>';
+const DASHBOARD_URL = 'https://usetempoai.com';
+const FROM_EMAIL = 'TempoAi <onboarding@resend.dev>';
 function formatCurrency(amount) {
     return `$${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
