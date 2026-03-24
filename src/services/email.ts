@@ -9,7 +9,7 @@ function getResend(): Resend {
 }
 
 const DASHBOARD_URL = 'https://usetempoai.com';
-const FROM_EMAIL = 'TempoAi <onboarding@resend.dev>';
+const FROM_EMAIL = 'TempoAi <hello@usetempoai.com>';
 
 function formatCurrency(amount: number): string {
   return `$${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;

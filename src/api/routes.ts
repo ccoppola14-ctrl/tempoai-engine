@@ -1938,7 +1938,8 @@ router.get('/events/:locationId', async (req: Request, res: Response) => {
   const days = parseInt(req.query.days as string) || 14;
 
   try {
-    const location = await prisma.location.findUniqueOrThrow({ where: { id: locationId } });
+    const location = await prisma.location.findUnique({ where: { id: locationId } });
+    if (!location) { res.status(404).json({ error: "Location not found" }); return; }
     const events = getUpcomingEvents(location.lat, location.lng, days);
 
     res.json({
@@ -2127,8 +2128,9 @@ router.post('/labor/sync/:locationId', async (req: Request, res: Response) => {
   const locationId = paramStr(req.params.locationId);
 
   try {
-    const location = await prisma.location.findUniqueOrThrow({ where: { id: locationId } });
+    const location = await prisma.location.findUnique({ where: { id: locationId } });
 
+    if (!location) { res.status(404).json({ error: "Location not found" }); return; }
     let synced = 0;
     let source = 'none';
 

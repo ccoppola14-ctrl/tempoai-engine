@@ -40,7 +40,11 @@ function endOfDay(date: Date): Date {
 }
 
 export async function generateDailySummary(locationId: string, date: Date = new Date()): Promise<SummaryData> {
-  const location = await prisma.location.findUniqueOrThrow({ where: { id: locationId } });
+  const location = await prisma.location.findUnique({ where: { id: locationId } });
+
+  if (!location) {
+    throw new Error(`Location ${locationId} not found`);
+  }
 
   const dayStart = startOfDay(date);
   const dayEnd = endOfDay(date);
