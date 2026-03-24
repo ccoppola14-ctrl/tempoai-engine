@@ -37,29 +37,32 @@ model Organization {
 }
 
 model Location {
-  id                String            @id @default(uuid())
-  organizationId    String
-  organization      Organization      @relation(fields: [organizationId], references: [id])
-  name              String
-  address           String
-  lat               Float
-  lng               Float
-  timezone          String            @default("America/New_York")
-  squareMerchantId  String?
-  squareAccessToken String?
-  cloverMerchantId  String?
-  cloverApiToken    String?
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
-  menuItems         MenuItem[]
-  orders            Order[]
-  weatherSnapshots  WeatherSnapshot[]
-  aiPatterns        AIPattern[]
-  recommendations   Recommendation[]
-  syncLogs          SyncLog[]
-  alerts            Alert[]
-  dailySummaries    DailySummary[]
-  contactEmail      String?
+  id                   String                @id @default(uuid())
+  organizationId       String
+  organization         Organization          @relation(fields: [organizationId], references: [id])
+  name                 String
+  address              String
+  lat                  Float
+  lng                  Float
+  timezone             String                @default("America/New_York")
+  squareMerchantId     String?
+  squareAccessToken    String?
+  cloverMerchantId     String?
+  cloverApiToken       String?
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  menuItems            MenuItem[]
+  orders               Order[]
+  weatherSnapshots     WeatherSnapshot[]
+  aiPatterns           AIPattern[]
+  recommendations      Recommendation[]
+  syncLogs             SyncLog[]
+  alerts               Alert[]
+  dailySummaries       DailySummary[]
+  contactEmail         String?
+  staffShifts          StaffShift[]
+  laborRecommendations LaborRecommendation[]
+  laborTargets         LaborTarget[]
 }
 
 model MenuItem {
@@ -255,6 +258,55 @@ model IngredientCost {
   unit           String
   quantity       Float
   updatedAt      DateTime @updatedAt
+}
+
+model StaffShift {
+  id           String   @id @default(uuid())
+  locationId   String
+  location     Location @relation(fields: [locationId], references: [id])
+  employeeId   String?
+  employeeName String?
+  role         String
+  startTime    DateTime
+  endTime      DateTime
+  hourlyRate   Float?
+  totalHours   Float
+  totalCost    Float?
+  source       String
+  createdAt    DateTime @default(now())
+}
+
+model LaborRecommendation {
+  id               String   @id @default(uuid())
+  locationId       String
+  location         Location @relation(fields: [locationId], references: [id])
+  date             String
+  daypart          String
+  currentStaff     Int
+  recommendedStaff Int
+  overstaffed      Boolean
+  wastedHours      Float
+  wastedCost       Float
+  missedRevenue    Float?
+  confidence       Float
+  reasoning        String
+  createdAt        DateTime @default(now())
+}
+
+model LaborTarget {
+  id                  String   @id @default(uuid())
+  locationId          String
+  location            Location @relation(fields: [locationId], references: [id])
+  dayOfWeek           Int
+  daypart             String
+  targetLaborPct      Float
+  minStaff            Int
+  maxStaff            Int
+  revenuePerStaffHour Float
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([locationId, dayOfWeek, daypart])
 }
 
 model Review {

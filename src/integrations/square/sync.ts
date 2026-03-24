@@ -208,6 +208,147 @@ export async function initialSync(locationId: string): Promise<{ catalog: number
   return { catalog, orders };
 }
 
+/**
+ * Sync labor/shift data from Square Team & Labor APIs.
+ * Requires EMPLOYEES_READ and TIMECARDS_READ permissions.
+ */
+export async function syncSquareLabor(locationId: string): Promise<number> {
+  const location = await prisma.location.findUnique({ where: { id: locationId } });
+  if (!location?.squareAccessToken || !location.squareMerchantId) {
+    logger.warn('SquareSync', `No access token or merchant ID for location ${locationId}`);
+    return 0;
+  }
+
+  try {
+    const token = decrypt(location.squareAccessToken);
+    const baseUrl = process.env.SQUARE_ENVIRONMENT === 'production'
+      ? 'https://connect.squareup.com'
+      : 'https://connect.squareupsandbox.com';
+
+    // Fetch team members
+    const teamResp = await fetch(`${baseUrl}/v2/team-members/search`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'Square-Version': '2024-01-18',
+      },
+      body: JSON.stringify({
+        query: {
+          filter: {
+            location_ids: [location.squareMerchantId],
+            status: 'ACTIVE',
+          },
+        },
+      }),
+    });
+
+    const teamData = (await teamResp.json()) as {
+      team_members?: Array<{
+        id: string;
+        given_name?: string;
+        family_name?: string;
+        is_owner?: boolean;
+      }>;
+    };
+    const members = teamData.team_members ?? [];
+    const memberMap = new Map<string, string>();
+    for (const m of members) {
+      memberMap.set(m.id, [m.given_name, m.family_name].filter(Boolean).join(' ') || m.id);
+    }
+
+    // Fetch shifts (last 90 days)
+    const sinceDate = new Date(Date.now() - NINETY_DAYS_MS);
+    const shiftsResp = await fetch(`${baseUrl}/v2/labor/shifts/search`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'Square-Version': '2024-01-18',
+      },
+      body: JSON.stringify({
+        query: {
+          filter: {
+            location_ids: [location.squareMerchantId],
+            start: { start_at: sinceDate.toISOString() },
+          },
+        },
+        limit: 200,
+      }),
+    });
+
+    const shiftsData = (await shiftsResp.json()) as {
+      shifts?: Array<{
+        id: string;
+        employee_id?: string;
+        team_member_id?: string;
+        location_id?: string;
+        start_at: string;
+        end_at: string;
+        wage?: {
+          title?: string;
+          hourly_rate?: { amount?: number; currency?: string };
+        };
+        status?: string;
+      }>;
+    };
+    const shifts = shiftsData.shifts ?? [];
+    let count = 0;
+
+    for (const shift of shifts) {
+      if (shift.status === 'OPEN') continue; // skip in-progress shifts
+
+      const startTime = new Date(shift.start_at);
+      const endTime = new Date(shift.end_at);
+      const totalHours = (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60);
+      const hourlyRate = shift.wage?.hourly_rate?.amount
+        ? shift.wage.hourly_rate.amount / 100
+        : undefined;
+
+      const empId = shift.team_member_id || shift.employee_id || null;
+
+      await prisma.staffShift.create({
+        data: {
+          locationId,
+          employeeId: empId,
+          employeeName: empId ? memberMap.get(empId) ?? null : null,
+          role: shift.wage?.title ?? 'staff',
+          startTime,
+          endTime,
+          hourlyRate: hourlyRate ?? null,
+          totalHours: Math.round(totalHours * 100) / 100,
+          totalCost: hourlyRate ? Math.round(totalHours * hourlyRate * 100) / 100 : null,
+          source: 'square',
+        },
+      });
+      count++;
+    }
+
+    await prisma.syncLog.create({
+      data: {
+        locationId,
+        source: 'square_labor',
+        status: 'success',
+        recordsProcessed: count,
+      },
+    });
+
+    logger.info('SquareSync', `Synced ${count} labor shifts for ${locationId}`);
+    return count;
+  } catch (err) {
+    await prisma.syncLog.create({
+      data: {
+        locationId,
+        source: 'square_labor',
+        status: 'error',
+        error: err instanceof Error ? err.message : String(err),
+      },
+    });
+    logger.error('SquareSync', `Failed to sync labor for ${locationId}`, err);
+    return 0;
+  }
+}
+
 export function startSyncSchedule(): void {
   if (process.env.DEMO_MODE === 'true') {
     logger.info('SquareSync', 'Demo mode — skipping sync schedule');

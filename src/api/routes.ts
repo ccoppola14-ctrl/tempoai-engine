@@ -24,6 +24,9 @@ import { sendDailySummary, buildMockSummary } from '../services/email';
 import { getBeforeAfterRevenue, getAttribution } from '../services/analytics';
 import { generateNotification } from '../services/notifications';
 import { getUpcomingEvents, EVENT_TYPE_RANGES } from '../integrations/events';
+import { analyzeLaborEfficiency, generateStaffingRecommendation, generateWeeklyLaborPlan, calculateLaborWaste, seedDefaultLaborTargets } from '../services/labor';
+import { syncSquareLabor } from '../integrations/square/sync';
+import { syncCloverLabor } from '../integrations/clover/sync';
 
 const router = Router();
 
@@ -1948,5 +1951,206 @@ router.get('/events/:locationId', async (req: Request, res: Response) => {
   } catch (err) {
     logger.error('Events', 'Failed to fetch events', err);
     res.status(500).json({ error: 'Failed to fetch events', message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// ─── Labor Optimization ──────────────────────────────────────────
+
+// GET /api/labor/analysis/:locationId — Full labor efficiency analysis
+router.get('/labor/analysis/:locationId', async (req: Request, res: Response) => {
+  const locationId = paramStr(req.params.locationId);
+  const days = parseInt(req.query.days as string) || 30;
+
+  try {
+    // Ensure labor targets exist
+    const existingTargets = await prisma.laborTarget.count({ where: { locationId } });
+    if (existingTargets === 0) {
+      await seedDefaultLaborTargets(locationId);
+    }
+
+    const analysis = await analyzeLaborEfficiency(locationId, days);
+    res.json(analysis);
+  } catch (err) {
+    logger.error('Labor', 'Failed to analyze labor efficiency', err);
+    res.status(500).json({ error: 'Failed to analyze labor efficiency', message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// GET /api/labor/recommendation/:locationId — Staffing recommendation for a date
+router.get('/labor/recommendation/:locationId', async (req: Request, res: Response) => {
+  const locationId = paramStr(req.params.locationId);
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const date = (req.query.date as string) || tomorrow.toISOString().split('T')[0];
+
+  try {
+    // Ensure labor targets exist
+    const existingTargets = await prisma.laborTarget.count({ where: { locationId } });
+    if (existingTargets === 0) {
+      await seedDefaultLaborTargets(locationId);
+    }
+
+    const recommendation = await generateStaffingRecommendation(locationId, date);
+    res.json(recommendation);
+  } catch (err) {
+    logger.error('Labor', 'Failed to generate staffing recommendation', err);
+    res.status(500).json({ error: 'Failed to generate recommendation', message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// GET /api/labor/weekly-plan/:locationId — Full week staffing plan
+router.get('/labor/weekly-plan/:locationId', async (req: Request, res: Response) => {
+  const locationId = paramStr(req.params.locationId);
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const start = (req.query.start as string) || tomorrow.toISOString().split('T')[0];
+
+  try {
+    // Ensure labor targets exist
+    const existingTargets = await prisma.laborTarget.count({ where: { locationId } });
+    if (existingTargets === 0) {
+      await seedDefaultLaborTargets(locationId);
+    }
+
+    const plan = await generateWeeklyLaborPlan(locationId, start);
+    res.json(plan);
+  } catch (err) {
+    logger.error('Labor', 'Failed to generate weekly labor plan', err);
+    res.status(500).json({ error: 'Failed to generate weekly plan', message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// GET /api/labor/waste/:locationId — Labor waste calculation (the closer)
+router.get('/labor/waste/:locationId', async (req: Request, res: Response) => {
+  const locationId = paramStr(req.params.locationId);
+  const days = parseInt(req.query.days as string) || 30;
+
+  try {
+    // Ensure labor targets exist
+    const existingTargets = await prisma.laborTarget.count({ where: { locationId } });
+    if (existingTargets === 0) {
+      await seedDefaultLaborTargets(locationId);
+    }
+
+    const waste = await calculateLaborWaste(locationId, days);
+    res.json(waste);
+  } catch (err) {
+    logger.error('Labor', 'Failed to calculate labor waste', err);
+    res.status(500).json({ error: 'Failed to calculate labor waste', message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// POST /api/labor/targets/:locationId — Set/update labor targets
+router.post('/labor/targets/:locationId', async (req: Request, res: Response) => {
+  const locationId = paramStr(req.params.locationId);
+  const { targets } = req.body as {
+    targets: Array<{
+      dayOfWeek: number;
+      daypart: string;
+      targetLaborPct?: number;
+      minStaff?: number;
+      maxStaff?: number;
+      revenuePerStaffHour?: number;
+    }>;
+  };
+
+  if (!targets || !Array.isArray(targets)) {
+    res.status(400).json({ error: 'Missing targets array in body' });
+    return;
+  }
+
+  try {
+    const results = [];
+    for (const t of targets) {
+      const result = await prisma.laborTarget.upsert({
+        where: {
+          locationId_dayOfWeek_daypart: {
+            locationId,
+            dayOfWeek: t.dayOfWeek,
+            daypart: t.daypart,
+          },
+        },
+        create: {
+          locationId,
+          dayOfWeek: t.dayOfWeek,
+          daypart: t.daypart,
+          targetLaborPct: t.targetLaborPct ?? 28,
+          minStaff: t.minStaff ?? 2,
+          maxStaff: t.maxStaff ?? 10,
+          revenuePerStaffHour: t.revenuePerStaffHour ?? 75,
+        },
+        update: {
+          ...(t.targetLaborPct !== undefined && { targetLaborPct: t.targetLaborPct }),
+          ...(t.minStaff !== undefined && { minStaff: t.minStaff }),
+          ...(t.maxStaff !== undefined && { maxStaff: t.maxStaff }),
+          ...(t.revenuePerStaffHour !== undefined && { revenuePerStaffHour: t.revenuePerStaffHour }),
+        },
+      });
+      results.push(result);
+    }
+
+    res.json({ updated: results.length, targets: results });
+  } catch (err) {
+    logger.error('Labor', 'Failed to update labor targets', err);
+    res.status(500).json({ error: 'Failed to update labor targets', message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// GET /api/labor/targets/:locationId — Get current labor targets
+router.get('/labor/targets/:locationId', async (req: Request, res: Response) => {
+  const locationId = paramStr(req.params.locationId);
+
+  try {
+    let targets = await prisma.laborTarget.findMany({
+      where: { locationId },
+      orderBy: [{ dayOfWeek: 'asc' }, { daypart: 'asc' }],
+    });
+
+    // Seed defaults if none exist
+    if (targets.length === 0) {
+      await seedDefaultLaborTargets(locationId);
+      targets = await prisma.laborTarget.findMany({
+        where: { locationId },
+        orderBy: [{ dayOfWeek: 'asc' }, { daypart: 'asc' }],
+      });
+    }
+
+    res.json({ locationId, targets });
+  } catch (err) {
+    logger.error('Labor', 'Failed to fetch labor targets', err);
+    res.status(500).json({ error: 'Failed to fetch labor targets', message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// POST /api/labor/sync/:locationId — Trigger manual labor data sync from POS
+router.post('/labor/sync/:locationId', async (req: Request, res: Response) => {
+  const locationId = paramStr(req.params.locationId);
+
+  try {
+    const location = await prisma.location.findUniqueOrThrow({ where: { id: locationId } });
+
+    let synced = 0;
+    let source = 'none';
+
+    if (location.squareAccessToken) {
+      synced = await syncSquareLabor(locationId);
+      source = 'square';
+    } else if (location.cloverApiToken) {
+      synced = await syncCloverLabor(locationId);
+      source = 'clover';
+    } else {
+      res.status(400).json({ error: 'No POS connected for this location' });
+      return;
+    }
+
+    res.json({
+      success: true,
+      source,
+      shiftsImported: synced,
+      message: `Synced ${synced} shifts from ${source}`,
+    });
+  } catch (err) {
+    logger.error('Labor', 'Failed to sync labor data', err);
+    res.status(500).json({ error: 'Failed to sync labor data', message: err instanceof Error ? err.message : String(err) });
   }
 });
