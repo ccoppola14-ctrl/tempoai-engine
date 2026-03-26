@@ -67,9 +67,9 @@ export async function seedDemoOrganization(brandConfig: DemoBrandConfig): Promis
     },
   });
 
-  // 4. Create locations (just first 3 for speed)
-  console.log('[seedDemo] Creating 3 locations...');
-  const locationCount = Math.min(3, brandConfig.locations.length);
+  // 4. Create all locations
+  console.log(`[seedDemo] Creating ${brandConfig.locations.length} locations...`);
+  const locationCount = brandConfig.locations.length;
   const locationRecords = [];
   for (let i = 0; i < locationCount; i++) {
     const loc = brandConfig.locations[i];
@@ -127,8 +127,8 @@ export async function seedDemoOrganization(brandConfig: DemoBrandConfig): Promis
       const date = new Date(now);
       date.setDate(date.getDate() - daysAgo);
       
-      // Generate 50-80 orders per day per location
-      const ordersToday = randomInt(50, 80);
+      // Generate 15-25 orders per day per location (keeps seed fast across 11 locations)
+      const ordersToday = randomInt(15, 25);
       for (let o = 0; o < ordersToday; o++) {
         const orderId = `demo2-order-${location.id}-${daysAgo}-${o}`;
         const hour = randomInt(6, 21);
