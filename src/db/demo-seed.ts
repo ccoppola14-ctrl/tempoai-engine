@@ -4,7 +4,7 @@ import prisma from './client';
 import type { DemoBrandConfig } from './demo-brands';
 
 // ─── Constants ────────────────────────────────────────────
-const DEMO_ORG_ID = 'demo-org-lees-donuts';
+const DEMO_ORG_ID = 'demo-org-lees-donuts-v2';
 const DEMO_USER_EMAIL = 'demo@usetempoai.com';
 const DAYS_OF_DATA = 3;
 
@@ -57,7 +57,7 @@ export async function seedDemoOrganization(brandConfig: DemoBrandConfig): Promis
   const passwordHash = await bcrypt.hash(tempPassword, 12);
   await prisma.user.create({
     data: {
-      id: `demo-user-${DEMO_ORG_ID}`,
+      id: `demo-user-lees-donuts`,
       email: DEMO_USER_EMAIL,
       passwordHash,
       name: 'Demo User',
