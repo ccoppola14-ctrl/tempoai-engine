@@ -14,7 +14,9 @@ import { getDaypart, getDayName } from '../utils/dayparts';
 import { logger } from '../utils/logger';
 import billingRouter from './billing';
 import authRouter from './auth';
-import { optionalAuth } from './middleware/auth';
+import { optionalAuth, authMiddleware, requireAdmin } from './middleware/auth';
+import { seedDemoOrganization, clearDemoData, swapDemoBrand, getDemoStatus } from '../db/demo-seed';
+import { getBrandConfig, listBrands } from '../db/demo-brands';
 import { generateDailySummary } from '../services/daily-summary';
 import { getActiveAlerts, acknowledgeAlert, evaluateAlerts } from '../services/alerts';
 import { generateForecast } from '../services/forecasting';
@@ -2154,5 +2156,80 @@ router.post('/labor/sync/:locationId', async (req: Request, res: Response) => {
   } catch (err) {
     logger.error('Labor', 'Failed to sync labor data', err);
     res.status(500).json({ error: 'Failed to sync labor data', message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// ─── Demo Admin Routes ──────────────────────────────────────
+// All demo routes require ADMIN auth
+
+// POST /api/admin/demo/seed — Seed demo data for a brand
+router.post('/admin/demo/seed', authMiddleware, requireAdmin, async (req: Request, res: Response) => {
+  const brand = req.body?.brand as string;
+  if (!brand) {
+    res.status(400).json({ error: 'Missing brand field', availableBrands: listBrands() });
+    return;
+  }
+
+  const config = getBrandConfig(brand);
+  if (!config) {
+    res.status(400).json({ error: `Unknown brand: ${brand}`, availableBrands: listBrands() });
+    return;
+  }
+
+  try {
+    logger.info('Demo', `Seeding demo data for brand: ${brand}`);
+    const result = await seedDemoOrganization(config);
+    logger.info('Demo', `Demo seed complete: ${result.locationCount} locations, ${result.orderCount} orders`);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    logger.error('Demo', 'Failed to seed demo data', err);
+    res.status(500).json({ error: 'Failed to seed demo data', message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// POST /api/admin/demo/clear — Remove all demo data
+router.post('/admin/demo/clear', authMiddleware, requireAdmin, async (_req: Request, res: Response) => {
+  try {
+    logger.info('Demo', 'Clearing all demo data');
+    const result = await clearDemoData();
+    res.json({ success: true, ...result });
+  } catch (err) {
+    logger.error('Demo', 'Failed to clear demo data', err);
+    res.status(500).json({ error: 'Failed to clear demo data', message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// GET /api/admin/demo/status — Get current demo org info
+router.get('/admin/demo/status', authMiddleware, requireAdmin, async (_req: Request, res: Response) => {
+  try {
+    const status = await getDemoStatus();
+    res.json(status);
+  } catch (err) {
+    logger.error('Demo', 'Failed to get demo status', err);
+    res.status(500).json({ error: 'Failed to get demo status', message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// POST /api/admin/demo/swap — Swap to a different brand
+router.post('/admin/demo/swap', authMiddleware, requireAdmin, async (req: Request, res: Response) => {
+  const brand = req.body?.brand as string;
+  if (!brand) {
+    res.status(400).json({ error: 'Missing brand field', availableBrands: listBrands() });
+    return;
+  }
+
+  const config = getBrandConfig(brand);
+  if (!config) {
+    res.status(400).json({ error: `Unknown brand: ${brand}`, availableBrands: listBrands() });
+    return;
+  }
+
+  try {
+    logger.info('Demo', `Swapping demo brand to: ${brand}`);
+    const result = await swapDemoBrand(brand);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    logger.error('Demo', 'Failed to swap demo brand', err);
+    res.status(500).json({ error: 'Failed to swap demo brand', message: err instanceof Error ? err.message : String(err) });
   }
 });
