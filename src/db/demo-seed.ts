@@ -713,25 +713,23 @@ export async function seedDemoOrganization(brandConfig: DemoBrandConfig): Promis
     locationRecords.push(record);
   }
 
-  // 5. Create menu items per location
+  // 5. Create menu items per location (batched)
   const allMenuItems: Map<string, MenuItemWithId[]> = new Map();
   for (const location of locationRecords) {
     const items: MenuItemWithId[] = [];
-    for (let i = 0; i < brandConfig.menuItems.length; i++) {
-      const mi = brandConfig.menuItems[i];
+    const menuItemData = brandConfig.menuItems.map((mi, i) => {
       const menuItemId = `demo-mi-${location.id}-${i.toString().padStart(2, '0')}`;
-      await prisma.menuItem.create({
-        data: {
-          id: menuItemId,
-          locationId: location.id,
-          name: mi.name,
-          category: mi.category,
-          price: mi.price,
-          active: true,
-        },
-      });
       items.push({ id: menuItemId, name: mi.name, category: mi.category, price: mi.price });
-    }
+      return {
+        id: menuItemId,
+        locationId: location.id,
+        name: mi.name,
+        category: mi.category,
+        price: mi.price,
+        active: true,
+      };
+    });
+    await prisma.menuItem.createMany({ data: menuItemData });
     allMenuItems.set(location.id, items);
   }
 
@@ -742,6 +740,7 @@ export async function seedDemoOrganization(brandConfig: DemoBrandConfig): Promis
   for (let locIdx = 0; locIdx < locationRecords.length; locIdx++) {
     const location = locationRecords[locIdx];
     const menuItems = allMenuItems.get(location.id)!;
+    console.log(`  Seeding location ${locIdx + 1}/${locationRecords.length}: ${location.name}`);
 
     for (let daysAgo = DAYS_OF_DATA; daysAgo >= 0; daysAgo--) {
       const date = new Date(now);
@@ -768,19 +767,19 @@ export async function seedDemoOrganization(brandConfig: DemoBrandConfig): Promis
       });
 
       // Batch insert weather
-      for (const wx of weatherData) {
-        await prisma.weatherSnapshot.create({ data: wx });
-      }
+      await prisma.weatherSnapshot.createMany({ data: weatherData });
 
       // Generate orders
       const dayOrders = generateOrdersForDay(date, location.id, menuItems, weatherHours, brandConfig, locIdx);
       totalOrders += dayOrders.length;
 
-      // Batch insert orders and items
-      for (const { order, items } of dayOrders) {
-        await prisma.order.create({ data: order });
-        for (const item of items) {
-          await prisma.orderItem.create({ data: item });
+      // Batch insert orders and order items
+      if (dayOrders.length > 0) {
+        await prisma.order.createMany({ data: dayOrders.map(d => d.order) });
+        const allItems = dayOrders.flatMap(d => d.items);
+        // Insert order items in chunks of 500 to avoid query size limits
+        for (let chunk = 0; chunk < allItems.length; chunk += 500) {
+          await prisma.orderItem.createMany({ data: allItems.slice(chunk, chunk + 500) });
         }
       }
 
@@ -791,21 +790,21 @@ export async function seedDemoOrganization(brandConfig: DemoBrandConfig): Promis
 
     // 7. Generate AI patterns for this location
     const patterns = generateAIPatterns(location.id, menuItems);
-    for (const pattern of patterns) {
-      await prisma.aIPattern.create({ data: pattern });
+    if (patterns.length > 0) {
+      await prisma.aIPattern.createMany({ data: patterns });
     }
 
     // 8. Generate recommendations for this location
     const recs = generateRecommendations(location.id, menuItems);
-    for (const rec of recs) {
-      await prisma.recommendation.create({ data: rec });
+    if (recs.length > 0) {
+      await prisma.recommendation.createMany({ data: recs });
     }
 
     // 9. Generate alerts (only for first 3 locations to keep it realistic)
     if (locIdx < 3) {
       const alerts = generateAlerts(location.id, location.name);
-      for (const alert of alerts) {
-        await prisma.alert.create({ data: alert });
+      if (alerts.length > 0) {
+        await prisma.alert.createMany({ data: alerts });
       }
     }
   }

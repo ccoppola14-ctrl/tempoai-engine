@@ -1,0 +1,57 @@
+const { seedDemoOrganization } = require('./dist/src/db/demo-seed.js');
+
+const leesDonutsConfig = {
+  brandName: "Lee's Donuts",
+  locations: [
+    { name: "Lee's Donuts — Granville Island", address: '1689 Johnston St, Vancouver, BC V6H 3R9', lat: 49.2713, lng: -123.1340, timezone: 'America/Vancouver' },
+    { name: "Lee's Donuts — YVR Airport", address: '3211 Grant McConachie Way, Richmond, BC V7B 0A4', lat: 49.1947, lng: -123.1816, timezone: 'America/Vancouver' },
+    { name: "Lee's Donuts — Burnaby (Metrotown)", address: '4700 Kingsway, Burnaby, BC V5H 4M1', lat: 49.2276, lng: -123.0008, timezone: 'America/Vancouver' },
+    { name: "Lee's Donuts — Downtown Vancouver", address: '701 W Georgia St, Vancouver, BC V7Y 1G5', lat: 49.2827, lng: -123.1207, timezone: 'America/Vancouver' },
+    { name: "Lee's Donuts — North Vancouver (Lonsdale Quay)", address: '123 Carrie Cates Ct, North Vancouver, BC V7M 3K7', lat: 49.3100, lng: -123.0824, timezone: 'America/Vancouver' },
+    { name: "Lee's Donuts — New Westminster", address: '800 Carnarvon St, New Westminster, BC V3M 0G3', lat: 49.2010, lng: -122.9110, timezone: 'America/Vancouver' },
+    { name: "Lee's Donuts — Surrey (Guildford)", address: '10355 152 St, Surrey, BC V3R 7C1', lat: 49.1913, lng: -122.8010, timezone: 'America/Vancouver' },
+    { name: "Lee's Donuts — Coquitlam", address: '2929 Barnet Hwy, Coquitlam, BC V3B 5R5', lat: 49.2781, lng: -122.7930, timezone: 'America/Vancouver' },
+    { name: "Lee's Donuts — Richmond Centre", address: '6551 No. 3 Rd, Richmond, BC V6Y 2B6', lat: 49.1666, lng: -123.1368, timezone: 'America/Vancouver' },
+    { name: "Lee's Donuts — West Vancouver (Park Royal)", address: '2002 Park Royal S, West Vancouver, BC V7T 2W4', lat: 49.3270, lng: -123.1356, timezone: 'America/Vancouver' },
+    { name: "Lee's Donuts — Kitsilano", address: '2083 W 4th Ave, Vancouver, BC V6J 1M7', lat: 49.2685, lng: -123.1580, timezone: 'America/Vancouver' },
+  ],
+  menuItems: [
+    { name: 'Honey Dip', category: 'Classic Donuts', price: 3.25 },
+    { name: 'Chocolate Dip', category: 'Classic Donuts', price: 3.50 },
+    { name: 'Maple Dip', category: 'Classic Donuts', price: 3.50 },
+    { name: 'Vanilla Dip', category: 'Classic Donuts', price: 3.25 },
+    { name: 'Old Fashioned Glazed', category: 'Classic Donuts', price: 3.25 },
+    { name: 'Cinnamon Sugar', category: 'Classic Donuts', price: 3.25 },
+    { name: 'Powdered Sugar', category: 'Classic Donuts', price: 3.25 },
+    { name: 'Apple Fritter', category: 'Fritters & Bars', price: 4.75 },
+    { name: 'Blueberry Fritter', category: 'Fritters & Bars', price: 4.75 },
+    { name: 'Maple Walnut Bar', category: 'Fritters & Bars', price: 4.50 },
+    { name: 'Chocolate Eclair', category: 'Filled Donuts', price: 4.50 },
+    { name: 'Bavarian Cream', category: 'Filled Donuts', price: 4.50 },
+    { name: 'Lemon Filled', category: 'Filled Donuts', price: 4.25 },
+    { name: 'Raspberry Jelly', category: 'Filled Donuts', price: 4.25 },
+    { name: 'Boston Cream', category: 'Filled Donuts', price: 4.75 },
+    { name: 'Coconut Dream', category: 'Specialty Donuts', price: 4.95 },
+    { name: 'Salted Caramel Crunch', category: 'Specialty Donuts', price: 5.50 },
+    { name: 'Maple Bacon', category: 'Specialty Donuts', price: 5.75 },
+    { name: 'Matcha Glazed', category: 'Specialty Donuts', price: 5.25 },
+    { name: "S'mores Donut", category: 'Specialty Donuts', price: 5.50 },
+    { name: 'Honey Cruller', category: 'Classic Donuts', price: 3.50 },
+    { name: 'Drip Coffee', category: 'Beverages', price: 3.00 },
+    { name: 'Americano', category: 'Beverages', price: 4.25 },
+    { name: 'Latte', category: 'Beverages', price: 5.50 },
+    { name: 'Hot Chocolate', category: 'Beverages', price: 4.75 },
+    { name: 'Iced Coffee', category: 'Beverages', price: 4.00 },
+  ],
+  weatherProfile: 'coastal-mild',
+  avgDailyRevenue: 10000,
+  avgOrderValue: 12.50,
+};
+
+async function main() {
+  console.log('Seeding Lee\'s Donuts demo...');
+  const result = await seedDemoOrganization(leesDonutsConfig);
+  console.log(JSON.stringify(result));
+}
+
+main().catch(e => { console.error(e); process.exit(1); });
