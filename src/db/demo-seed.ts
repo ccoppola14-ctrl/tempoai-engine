@@ -30,7 +30,7 @@ function gaussianRandom(mean: number, stddev: number): number {
 // ─── Constants ────────────────────────────────────────────
 const DEMO_ORG_ID = 'demo-org-lees-donuts';
 const DEMO_USER_EMAIL = 'demo@usetempoai.com';
-const DAYS_OF_DATA = 30;
+const DAYS_OF_DATA = 14;
 
 // ─── Vancouver coastal-mild weather generation ────────────
 interface WeatherHour {
@@ -766,20 +766,34 @@ export async function seedDemoOrganization(brandConfig: DemoBrandConfig): Promis
         };
       });
 
-      // Batch insert weather
-      await prisma.weatherSnapshot.createMany({ data: weatherData });
+      // Batch insert weather via raw SQL
+      if (weatherData.length > 0) {
+        const wxValues = weatherData.map(w =>
+          `('${w.id}','${w.locationId}','${w.timestamp.toISOString()}',${w.temperature},'${w.conditions}',${w.precipitation},${w.humidity},${w.windSpeed})`
+        ).join(',');
+        await prisma.$executeRawUnsafe(`INSERT INTO "WeatherSnapshot" (id, "locationId", timestamp, temperature, conditions, precipitation, humidity, "windSpeed") VALUES ${wxValues}`);
+      }
 
       // Generate orders
       const dayOrders = generateOrdersForDay(date, location.id, menuItems, weatherHours, brandConfig, locIdx);
       totalOrders += dayOrders.length;
 
-      // Batch insert orders and order items
+      // Batch insert orders and order items using raw SQL for speed
       if (dayOrders.length > 0) {
-        await prisma.order.createMany({ data: dayOrders.map(d => d.order) });
+        const orderValues = dayOrders.map(d => {
+          const o = d.order;
+          return `('${o.id}','${o.locationId}','${o.timestamp.toISOString()}',${o.total},${o.itemCount},NOW())`;
+        }).join(',');
+        await prisma.$executeRawUnsafe(`INSERT INTO "Order" (id, "locationId", timestamp, total, "itemCount", "createdAt") VALUES ${orderValues}`);
+
         const allItems = dayOrders.flatMap(d => d.items);
-        // Insert order items in chunks of 500 to avoid query size limits
-        for (let chunk = 0; chunk < allItems.length; chunk += 500) {
-          await prisma.orderItem.createMany({ data: allItems.slice(chunk, chunk + 500) });
+        // Insert order items in chunks of 1000
+        for (let chunk = 0; chunk < allItems.length; chunk += 1000) {
+          const batch = allItems.slice(chunk, chunk + 1000);
+          const itemValues = batch.map(i =>
+            `('${i.id}','${i.orderId}','${i.menuItemId}',${i.quantity},${i.amount})`
+          ).join(',');
+          await prisma.$executeRawUnsafe(`INSERT INTO "OrderItem" (id, "orderId", "menuItemId", quantity, amount) VALUES ${itemValues}`);
         }
       }
 
