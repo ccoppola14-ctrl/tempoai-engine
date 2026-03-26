@@ -73,7 +73,7 @@ export async function seedDemoOrganization(brandConfig: DemoBrandConfig): Promis
   const locationRecords = [];
   for (let i = 0; i < locationCount; i++) {
     const loc = brandConfig.locations[i];
-    const locationId = `demo-loc-${i.toString().padStart(2, '0')}`;
+    const locationId = `demo2-loc-${i.toString().padStart(2, '0')}`;
     const record = await prisma.location.create({
       data: {
         id: locationId,
@@ -97,7 +97,7 @@ export async function seedDemoOrganization(brandConfig: DemoBrandConfig): Promis
     const items = [];
     for (let i = 0; i < brandConfig.menuItems.length; i++) {
       const mi = brandConfig.menuItems[i];
-      const menuItemId = `demo-mi-${location.id}-${i.toString().padStart(2, '0')}`;
+      const menuItemId = `demo2-mi-${location.id}-${i.toString().padStart(2, '0')}`;
       await prisma.menuItem.create({
         data: {
           id: menuItemId,
@@ -130,7 +130,7 @@ export async function seedDemoOrganization(brandConfig: DemoBrandConfig): Promis
       // Generate 50-80 orders per day per location
       const ordersToday = randomInt(50, 80);
       for (let o = 0; o < ordersToday; o++) {
-        const orderId = `demo-order-${location.id}-${daysAgo}-${o}`;
+        const orderId = `demo2-order-${location.id}-${daysAgo}-${o}`;
         const hour = randomInt(6, 21);
         const minute = randomInt(0, 59);
         const orderTime = new Date(date);
@@ -147,7 +147,7 @@ export async function seedDemoOrganization(brandConfig: DemoBrandConfig): Promis
           const amount = item.price * qty;
           total += amount;
           orderItemData.push({
-            id: `demo-oi-${orderId}-${j}`,
+            id: `demo2-oi-${orderId}-${j}`,
             orderId,
             menuItemId: item.id,
             quantity: qty,
