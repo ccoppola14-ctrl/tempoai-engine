@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import prisma from '../db/client';
-import { authMiddleware } from './middleware/auth';
+import { authMiddleware, requireOwnerOrAbove } from './middleware/auth';
 import { sendWelcomeEmail, sendNewLeadNotification, sendPasswordResetEmail, sendVerificationEmail } from '../services/email';
 import { logger } from '../utils/logger';
 
@@ -305,6 +305,79 @@ router.post('/verify-email', async (req: Request, res: Response) => {
   } catch (err) {
     console.error('Verify email error:', err);
     res.status(500).json({ error: 'Failed to verify email' });
+  }
+});
+
+// ─── POST /invite ────────────────────────────────────────
+router.post('/invite', authMiddleware, requireOwnerOrAbove, async (req: Request, res: Response) => {
+  try {
+    const { email, name, role, locationIds, organizationId: bodyOrgId } = req.body as {
+      email?: string;
+      name?: string;
+      role?: string;
+      locationIds?: string[];
+      organizationId?: string;
+    };
+
+    if (!email || !name || !role) {
+      res.status(400).json({ error: 'email, name, and role are required' });
+      return;
+    }
+
+    if (role !== 'OWNER' && role !== 'MANAGER') {
+      res.status(400).json({ error: 'role must be OWNER or MANAGER' });
+      return;
+    }
+
+    if (role === 'MANAGER' && (!locationIds || locationIds.length === 0)) {
+      res.status(400).json({ error: 'locationIds is required for MANAGER role' });
+      return;
+    }
+
+    const existing = await prisma.user.findUnique({ where: { email } });
+    if (existing) {
+      res.status(409).json({ error: 'An account with this email already exists' });
+      return;
+    }
+
+    // Determine org: ADMIN can specify, OWNER uses their own
+    const orgId = req.user!.role === 'ADMIN' && bodyOrgId
+      ? bodyOrgId
+      : req.user!.organizationId;
+
+    if (!orgId) {
+      res.status(400).json({ error: 'No organization context available' });
+      return;
+    }
+
+    const tempPassword = generateTempPassword();
+    const passwordHash = await bcrypt.hash(tempPassword, 12);
+
+    const user = await prisma.user.create({
+      data: {
+        email,
+        passwordHash,
+        name,
+        role,
+        organizationId: orgId,
+        emailVerified: true,
+      },
+    });
+
+    // Create UserLocation assignments for MANAGER
+    if (role === 'MANAGER' && locationIds) {
+      for (const locationId of locationIds) {
+        await prisma.userLocation.create({
+          data: { userId: user.id, locationId },
+        });
+      }
+    }
+
+    logger.info('Auth', `User invited: ${email} (role: ${role}) by ${req.user!.email}`);
+    res.status(201).json({ user: sanitizeUser(user), tempPassword });
+  } catch (err) {
+    console.error('Invite error:', err);
+    res.status(500).json({ error: 'Invite failed' });
   }
 });
 

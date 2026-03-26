@@ -9,6 +9,7 @@ datasource db {
 enum UserRole {
   ADMIN
   OWNER
+  MANAGER
 }
 
 model User {
@@ -25,6 +26,18 @@ model User {
   verificationToken String?
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
+  assignedLocations UserLocation[]
+}
+
+model UserLocation {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  locationId String
+  location   Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  @@unique([userId, locationId])
 }
 
 model Organization {
@@ -61,6 +74,7 @@ model Location {
   alerts               Alert[]
   dailySummaries       DailySummary[]
   contactEmail         String?
+  assignedUsers        UserLocation[]
   staffShifts          StaffShift[]
   laborRecommendations LaborRecommendation[]
   laborTargets         LaborTarget[]

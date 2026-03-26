@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import prisma from '../../db/client';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'tempoai-dev-secret';
 
@@ -78,4 +79,51 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
     return;
   }
   next();
+}
+
+/**
+ * Requires ADMIN or OWNER role — blocks MANAGER.
+ */
+export function requireOwnerOrAbove(req: Request, res: Response, next: NextFunction): void {
+  if (!req.user || (req.user.role !== 'ADMIN' && req.user.role !== 'OWNER')) {
+    res.status(403).json({ error: 'Owner or admin access required' });
+    return;
+  }
+  next();
+}
+
+/**
+ * Get the location IDs a MANAGER user is assigned to.
+ */
+export async function getUserLocationIds(userId: string): Promise<string[]> {
+  const assignments = await prisma.userLocation.findMany({
+    where: { userId },
+    select: { locationId: true },
+  });
+  return assignments.map((a) => a.locationId);
+}
+
+/**
+ * Check if a user can access a specific location.
+ * ADMIN: always allowed.
+ * OWNER: allowed if location belongs to their org.
+ * MANAGER: allowed only if they have a UserLocation record.
+ */
+export async function canAccessLocation(user: AuthUser, locationId: string): Promise<boolean> {
+  if (user.role === 'ADMIN') return true;
+
+  if (user.role === 'OWNER') {
+    if (!user.organizationId) return false;
+    const location = await prisma.location.findUnique({
+      where: { id: locationId },
+      select: { organizationId: true },
+    });
+    return location?.organizationId === user.organizationId;
+  }
+
+  // MANAGER
+  const assignment = await prisma.userLocation.findUnique({
+    where: { userId_locationId: { userId: user.id, locationId } },
+  });
+  return !!assignment;
 }

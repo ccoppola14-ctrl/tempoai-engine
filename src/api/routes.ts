@@ -14,7 +14,7 @@ import { getDaypart, getDayName } from '../utils/dayparts';
 import { logger } from '../utils/logger';
 import billingRouter from './billing';
 import authRouter from './auth';
-import { optionalAuth, authMiddleware, requireAdmin } from './middleware/auth';
+import { optionalAuth, authMiddleware, requireAdmin, getUserLocationIds, canAccessLocation } from './middleware/auth';
 import { seedDemoOrganization, clearDemoData, swapDemoBrand, getDemoStatus } from '../db/demo-seed';
 import { getBrandConfig, listBrands } from '../db/demo-brands';
 import { generateDailySummary } from '../services/daily-summary';
@@ -402,10 +402,19 @@ router.get('/onboard/status/:merchantId', async (req: Request, res: Response) =>
 
 // ─── Locations ────────────────────────────────────────────
 router.get('/locations', optionalAuth, async (req: Request, res: Response) => {
-  // Org-scoping: non-admin authenticated users only see their org's locations
-  const where = req.user && req.user.role !== 'ADMIN' && req.user.organizationId
-    ? { organizationId: req.user.organizationId }
-    : {};
+  let where: any = {};
+
+  if (req.user) {
+    if (req.user.role === 'MANAGER') {
+      // MANAGER: only assigned locations
+      const locationIds = await getUserLocationIds(req.user.id);
+      where = { id: { in: locationIds } };
+    } else if (req.user.role !== 'ADMIN' && req.user.organizationId) {
+      // OWNER: all locations in their org
+      where = { organizationId: req.user.organizationId };
+    }
+    // ADMIN: no filter
+  }
 
   const locations = await prisma.location.findMany({
     where,
@@ -417,8 +426,14 @@ router.get('/locations', optionalAuth, async (req: Request, res: Response) => {
   res.json(locations);
 });
 
-router.get('/locations/:id', async (req: Request, res: Response) => {
+router.get('/locations/:id', optionalAuth, async (req: Request, res: Response) => {
   const id = paramStr(req.params.id);
+
+  if (req.user && !(await canAccessLocation(req.user, id))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
+
   const location = await prisma.location.findUnique({
     where: { id },
     include: {
@@ -441,8 +456,13 @@ router.get('/locations/:id', async (req: Request, res: Response) => {
 });
 
 // ─── Orders ───────────────────────────────────────────────
-router.get('/locations/:id/orders', async (req: Request, res: Response) => {
+router.get('/locations/:id/orders', optionalAuth, async (req: Request, res: Response) => {
   const id = paramStr(req.params.id);
+
+  if (req.user && !(await canAccessLocation(req.user, id))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
   const limit = parseInt(req.query.limit as string) || 50;
   const offset = parseInt(req.query.offset as string) || 0;
 
@@ -464,8 +484,13 @@ router.get('/locations/:id/orders', async (req: Request, res: Response) => {
 });
 
 // ─── Menu ─────────────────────────────────────────────────
-router.get('/locations/:id/menu', async (req: Request, res: Response) => {
+router.get('/locations/:id/menu', optionalAuth, async (req: Request, res: Response) => {
   const id = paramStr(req.params.id);
+
+  if (req.user && !(await canAccessLocation(req.user, id))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
   const menuItems = await prisma.menuItem.findMany({
     where: { locationId: id, active: true },
     include: {
@@ -479,8 +504,13 @@ router.get('/locations/:id/menu', async (req: Request, res: Response) => {
 });
 
 // ─── Weather ──────────────────────────────────────────────
-router.get('/locations/:id/weather', async (req: Request, res: Response) => {
+router.get('/locations/:id/weather', optionalAuth, async (req: Request, res: Response) => {
   const id = paramStr(req.params.id);
+
+  if (req.user && !(await canAccessLocation(req.user, id))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
   const location = await prisma.location.findUnique({
     where: { id },
   });
@@ -523,8 +553,13 @@ router.get('/recommendations', async (_req: Request, res: Response) => {
   res.json(recommendations);
 });
 
-router.get('/recommendations/:locationId', async (req: Request, res: Response) => {
+router.get('/recommendations/:locationId', optionalAuth, async (req: Request, res: Response) => {
   const locationId = paramStr(req.params.locationId);
+
+  if (req.user && !(await canAccessLocation(req.user, locationId))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
   const recommendations = await prisma.recommendation.findMany({
     where: { locationId, status: 'active' },
     include: { menuItem: true },
@@ -606,8 +641,13 @@ function matchesTrigger(
   }
 }
 
-router.get('/active-promos/:locationId', async (req: Request, res: Response) => {
+router.get('/active-promos/:locationId', optionalAuth, async (req: Request, res: Response) => {
   const locationId = paramStr(req.params.locationId);
+
+  if (req.user && !(await canAccessLocation(req.user, locationId))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
 
   try {
     const location = await prisma.location.findUnique({ where: { id: locationId } });
@@ -1153,8 +1193,13 @@ router.post('/clover/analyze', async (req: Request, res: Response) => {
 
 // ─── AI Sales Forecasting ────────────────────────────────
 // GET /api/forecast/:locationId — generate 7-day sales forecast
-router.get('/forecast/:locationId', async (req: Request, res: Response) => {
+router.get('/forecast/:locationId', optionalAuth, async (req: Request, res: Response) => {
   const locationId = paramStr(req.params.locationId);
+
+  if (req.user && !(await canAccessLocation(req.user, locationId))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
 
   try {
     const forecast = await generateForecast(locationId);
@@ -1171,8 +1216,13 @@ router.get('/forecast/:locationId', async (req: Request, res: Response) => {
 
 // ─── Food Cost Tracker ───────────────────────────────────
 // POST /api/food-cost/:locationId/items — add/update ingredient costs for a menu item
-router.post('/food-cost/:locationId/items', async (req: Request, res: Response) => {
+router.post('/food-cost/:locationId/items', optionalAuth, async (req: Request, res: Response) => {
   const locationId = paramStr(req.params.locationId);
+
+  if (req.user && !(await canAccessLocation(req.user, locationId))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
   const { menuItemId, ingredients } = req.body as { menuItemId?: string; ingredients?: Array<{ name: string; cost: number; unit: string; quantity: number }> };
 
   if (!menuItemId || !ingredients || !Array.isArray(ingredients)) {
@@ -1190,8 +1240,13 @@ router.post('/food-cost/:locationId/items', async (req: Request, res: Response) 
 });
 
 // GET /api/food-cost/:locationId — get all items with food cost analysis
-router.get('/food-cost/:locationId', async (req: Request, res: Response) => {
+router.get('/food-cost/:locationId', optionalAuth, async (req: Request, res: Response) => {
   const locationId = paramStr(req.params.locationId);
+
+  if (req.user && !(await canAccessLocation(req.user, locationId))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
 
   try {
     const items = await getFoodCostAnalysis(locationId);
@@ -1203,8 +1258,13 @@ router.get('/food-cost/:locationId', async (req: Request, res: Response) => {
 });
 
 // GET /api/food-cost/:locationId/summary — overall food cost % and breakdown
-router.get('/food-cost/:locationId/summary', async (req: Request, res: Response) => {
+router.get('/food-cost/:locationId/summary', optionalAuth, async (req: Request, res: Response) => {
   const locationId = paramStr(req.params.locationId);
+
+  if (req.user && !(await canAccessLocation(req.user, locationId))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
 
   try {
     const summary = await getFoodCostSummary(locationId);
@@ -1217,8 +1277,13 @@ router.get('/food-cost/:locationId/summary', async (req: Request, res: Response)
 
 // ─── Review Monitoring ───────────────────────────────────
 // GET /api/reviews/:locationId — get recent reviews
-router.get('/reviews/:locationId', async (req: Request, res: Response) => {
+router.get('/reviews/:locationId', optionalAuth, async (req: Request, res: Response) => {
   const locationId = paramStr(req.params.locationId);
+
+  if (req.user && !(await canAccessLocation(req.user, locationId))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
 
   try {
     const reviews = await getReviews(locationId);
@@ -1257,8 +1322,13 @@ export default router;
 // This endpoint powers live cashier recommendations.
 // A Clover app, cashier tablet, or any POS integration hits this
 // to get the top items to suggest RIGHT NOW based on current conditions.
-router.get('/cashier/suggest/:locationId', async (req: Request, res: Response) => {
+router.get('/cashier/suggest/:locationId', optionalAuth, async (req: Request, res: Response) => {
   const locationId = paramStr(req.params.locationId);
+
+  if (req.user && !(await canAccessLocation(req.user, locationId))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
 
   try {
     const location = await prisma.location.findUnique({ where: { id: locationId } });
@@ -1791,8 +1861,13 @@ router.post('/reports/daily-summary', async (req: Request, res: Response) => {
 });
 
 // GET /api/reports/daily-summary/:locationId — retrieve the latest summary
-router.get('/reports/daily-summary/:locationId', async (req: Request, res: Response) => {
+router.get('/reports/daily-summary/:locationId', optionalAuth, async (req: Request, res: Response) => {
   const locationId = paramStr(req.params.locationId);
+
+  if (req.user && !(await canAccessLocation(req.user, locationId))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
 
   try {
     const summary = await prisma.dailySummary.findFirst({
@@ -1817,8 +1892,13 @@ router.get('/reports/daily-summary/:locationId', async (req: Request, res: Respo
 
 // ─── Smart Alerts ────────────────────────────────────────
 // GET /api/alerts/:locationId — get active alerts for a location
-router.get('/alerts/:locationId', async (req: Request, res: Response) => {
+router.get('/alerts/:locationId', optionalAuth, async (req: Request, res: Response) => {
   const locationId = paramStr(req.params.locationId);
+
+  if (req.user && !(await canAccessLocation(req.user, locationId))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
 
   try {
     // Run alert evaluation first to ensure alerts are current
@@ -1890,8 +1970,13 @@ router.post('/email/test-digest', async (req: Request, res: Response) => {
 // ─── Before / After Revenue Dashboard ────────────────────────────
 
 // GET /api/analytics/before-after/:locationId — revenue lift since install
-router.get('/analytics/before-after/:locationId', async (req: Request, res: Response) => {
+router.get('/analytics/before-after/:locationId', optionalAuth, async (req: Request, res: Response) => {
   const locationId = paramStr(req.params.locationId);
+
+  if (req.user && !(await canAccessLocation(req.user, locationId))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
   try {
     const result = await getBeforeAfterRevenue(locationId);
     res.json(result);
@@ -1902,8 +1987,13 @@ router.get('/analytics/before-after/:locationId', async (req: Request, res: Resp
 });
 
 // GET /api/analytics/attribution/:locationId — recommendation attribution
-router.get('/analytics/attribution/:locationId', async (req: Request, res: Response) => {
+router.get('/analytics/attribution/:locationId', optionalAuth, async (req: Request, res: Response) => {
   const locationId = paramStr(req.params.locationId);
+
+  if (req.user && !(await canAccessLocation(req.user, locationId))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
   try {
     const result = await getAttribution(locationId);
     res.json(result);
@@ -1916,8 +2006,13 @@ router.get('/analytics/attribution/:locationId', async (req: Request, res: Respo
 // ─── Daily Summary Notification ──────────────────────────────────
 
 // POST /api/notifications/daily-summary/:locationId — generate SMS + email formatted summary
-router.post('/notifications/daily-summary/:locationId', async (req: Request, res: Response) => {
+router.post('/notifications/daily-summary/:locationId', optionalAuth, async (req: Request, res: Response) => {
   const locationId = paramStr(req.params.locationId);
+
+  if (req.user && !(await canAccessLocation(req.user, locationId))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
   try {
     const result = await generateNotification(locationId);
     res.json({
@@ -1935,8 +2030,13 @@ router.post('/notifications/daily-summary/:locationId', async (req: Request, res
 // ─── Local Events ────────────────────────────────────────────────
 
 // GET /api/events/:locationId — upcoming events that may affect the location
-router.get('/events/:locationId', async (req: Request, res: Response) => {
+router.get('/events/:locationId', optionalAuth, async (req: Request, res: Response) => {
   const locationId = paramStr(req.params.locationId);
+
+  if (req.user && !(await canAccessLocation(req.user, locationId))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
   const days = parseInt(req.query.days as string) || 14;
 
   try {
@@ -1960,8 +2060,13 @@ router.get('/events/:locationId', async (req: Request, res: Response) => {
 // ─── Labor Optimization ──────────────────────────────────────────
 
 // GET /api/labor/analysis/:locationId — Full labor efficiency analysis
-router.get('/labor/analysis/:locationId', async (req: Request, res: Response) => {
+router.get('/labor/analysis/:locationId', optionalAuth, async (req: Request, res: Response) => {
   const locationId = paramStr(req.params.locationId);
+
+  if (req.user && !(await canAccessLocation(req.user, locationId))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
   const days = parseInt(req.query.days as string) || 30;
 
   try {
@@ -1980,8 +2085,13 @@ router.get('/labor/analysis/:locationId', async (req: Request, res: Response) =>
 });
 
 // GET /api/labor/recommendation/:locationId — Staffing recommendation for a date
-router.get('/labor/recommendation/:locationId', async (req: Request, res: Response) => {
+router.get('/labor/recommendation/:locationId', optionalAuth, async (req: Request, res: Response) => {
   const locationId = paramStr(req.params.locationId);
+
+  if (req.user && !(await canAccessLocation(req.user, locationId))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
   const tomorrow = new Date();
   tomorrow.setDate(tomorrow.getDate() + 1);
   const date = (req.query.date as string) || tomorrow.toISOString().split('T')[0];
@@ -2002,8 +2112,13 @@ router.get('/labor/recommendation/:locationId', async (req: Request, res: Respon
 });
 
 // GET /api/labor/weekly-plan/:locationId — Full week staffing plan
-router.get('/labor/weekly-plan/:locationId', async (req: Request, res: Response) => {
+router.get('/labor/weekly-plan/:locationId', optionalAuth, async (req: Request, res: Response) => {
   const locationId = paramStr(req.params.locationId);
+
+  if (req.user && !(await canAccessLocation(req.user, locationId))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
   const tomorrow = new Date();
   tomorrow.setDate(tomorrow.getDate() + 1);
   const start = (req.query.start as string) || tomorrow.toISOString().split('T')[0];
@@ -2024,8 +2139,13 @@ router.get('/labor/weekly-plan/:locationId', async (req: Request, res: Response)
 });
 
 // GET /api/labor/waste/:locationId — Labor waste calculation (the closer)
-router.get('/labor/waste/:locationId', async (req: Request, res: Response) => {
+router.get('/labor/waste/:locationId', optionalAuth, async (req: Request, res: Response) => {
   const locationId = paramStr(req.params.locationId);
+
+  if (req.user && !(await canAccessLocation(req.user, locationId))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
   const days = parseInt(req.query.days as string) || 30;
 
   try {
@@ -2044,8 +2164,13 @@ router.get('/labor/waste/:locationId', async (req: Request, res: Response) => {
 });
 
 // POST /api/labor/targets/:locationId — Set/update labor targets
-router.post('/labor/targets/:locationId', async (req: Request, res: Response) => {
+router.post('/labor/targets/:locationId', optionalAuth, async (req: Request, res: Response) => {
   const locationId = paramStr(req.params.locationId);
+
+  if (req.user && !(await canAccessLocation(req.user, locationId))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
   const { targets } = req.body as {
     targets: Array<{
       dayOfWeek: number;
@@ -2100,8 +2225,13 @@ router.post('/labor/targets/:locationId', async (req: Request, res: Response) =>
 });
 
 // GET /api/labor/targets/:locationId — Get current labor targets
-router.get('/labor/targets/:locationId', async (req: Request, res: Response) => {
+router.get('/labor/targets/:locationId', optionalAuth, async (req: Request, res: Response) => {
   const locationId = paramStr(req.params.locationId);
+
+  if (req.user && !(await canAccessLocation(req.user, locationId))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
 
   try {
     let targets = await prisma.laborTarget.findMany({
@@ -2126,8 +2256,13 @@ router.get('/labor/targets/:locationId', async (req: Request, res: Response) => 
 });
 
 // POST /api/labor/sync/:locationId — Trigger manual labor data sync from POS
-router.post('/labor/sync/:locationId', async (req: Request, res: Response) => {
+router.post('/labor/sync/:locationId', optionalAuth, async (req: Request, res: Response) => {
   const locationId = paramStr(req.params.locationId);
+
+  if (req.user && !(await canAccessLocation(req.user, locationId))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
 
   try {
     const location = await prisma.location.findUnique({ where: { id: locationId } });

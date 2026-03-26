@@ -35,6 +35,10 @@ export async function seedDemoOrganization(brandConfig: DemoBrandConfig): Promis
   orderCount: number;
   demoUserEmail: string;
   demoUserPassword: string;
+  ownerEmail: string;
+  ownerPassword: string;
+  managerEmail: string;
+  managerPassword: string;
 }> {
   console.log('[seedDemo] Starting...');
   
@@ -170,8 +174,49 @@ export async function seedDemoOrganization(brandConfig: DemoBrandConfig): Promis
     }
   }
 
+  // 7. Create franchise owner (Cameron Jarvis — OWNER, sees all 11 locations)
+  console.log('[seedDemo] Creating franchise accounts...');
+  const ownerPassword = `demo-${crypto.randomUUID().slice(0, 8)}`;
+  const ownerPasswordHash = await bcrypt.hash(ownerPassword, 12);
+  await prisma.user.create({
+    data: {
+      id: 'demo2-user-cameron',
+      email: 'cameron@leesdonuts.com',
+      passwordHash: ownerPasswordHash,
+      name: 'Cameron Jarvis',
+      role: 'OWNER',
+      organizationId: org.id,
+      emailVerified: true,
+    },
+  });
+  console.log('  - Cameron Jarvis (OWNER) — cameron@leesdonuts.com');
+
+  // 8. Create sample franchisee (MANAGER — only Granville Island)
+  const managerPassword = `demo-${crypto.randomUUID().slice(0, 8)}`;
+  const managerPasswordHash = await bcrypt.hash(managerPassword, 12);
+  const granvilleManager = await prisma.user.create({
+    data: {
+      id: 'demo2-user-granville-mgr',
+      email: 'granville@leesdonuts.com',
+      passwordHash: managerPasswordHash,
+      name: 'Granville Island Manager',
+      role: 'MANAGER',
+      organizationId: org.id,
+      emailVerified: true,
+    },
+  });
+  // Assign to Granville Island location (index 0 → demo2-loc-00)
+  await prisma.userLocation.create({
+    data: {
+      id: 'demo2-ul-granville',
+      userId: granvilleManager.id,
+      locationId: 'demo2-loc-00',
+    },
+  });
+  console.log('  - Granville Island Manager (MANAGER) — granville@leesdonuts.com → Granville Island only');
+
   console.log(`[seedDemo] Done! ${totalOrders} orders created.`);
-  
+
   return {
     organizationId: org.id,
     locationCount: locationRecords.length,
@@ -179,6 +224,10 @@ export async function seedDemoOrganization(brandConfig: DemoBrandConfig): Promis
     orderCount: totalOrders,
     demoUserEmail: DEMO_USER_EMAIL,
     demoUserPassword: tempPassword,
+    ownerEmail: 'cameron@leesdonuts.com',
+    ownerPassword,
+    managerEmail: 'granville@leesdonuts.com',
+    managerPassword,
   };
 }
 
@@ -214,6 +263,16 @@ export async function clearDemoData(): Promise<{ deleted: boolean }> {
     select: { id: true },
   });
   const orderIds = orders.map((o) => o.id);
+
+  // Delete UserLocation assignments for users in demo orgs
+  const demoUsers = await prisma.user.findMany({
+    where: { organizationId: { in: orgIds } },
+    select: { id: true },
+  });
+  const demoUserIds = demoUsers.map((u) => u.id);
+  if (demoUserIds.length > 0) {
+    await prisma.userLocation.deleteMany({ where: { userId: { in: demoUserIds } } });
+  }
 
   if (locationIds.length > 0) {
     // Delete in correct order (child records first)
