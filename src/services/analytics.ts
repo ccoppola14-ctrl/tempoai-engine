@@ -113,14 +113,19 @@ export async function getBeforeAfterRevenue(locationId: string): Promise<BeforeA
   }
 
   const before = await avgDailyRevenue(locationId, baselineFrom, baselineTo);
-  const after = await avgDailyRevenue(locationId, afterFrom, now);
+  const after = afterFrom <= now
+    ? await avgDailyRevenue(locationId, afterFrom, now)
+    : { avgDaily: 0, totalDays: 0, totalRevenue: 0 };
 
-  const liftPercent = before.avgDaily > 0
+  // If no baseline data at all, we can't compute a meaningful lift
+  const liftPercent = before.avgDaily > 0 && after.totalDays > 0
     ? ((after.avgDaily - before.avgDaily) / before.avgDaily) * 100
     : 0;
 
   // Monthly dollar lift (30 days)
-  const liftDollars = (after.avgDaily - before.avgDaily) * 30;
+  const liftDollars = after.totalDays > 0
+    ? (after.avgDaily - before.avgDaily) * 30
+    : 0;
 
   // Weekly comparison: break the "after" period into weeks
   const weeklyComparison: WeekComparison[] = [];

@@ -1316,8 +1316,6 @@ router.post('/reviews/:id/draft-response', async (req: Request, res: Response) =
   }
 });
 
-export default router;
-
 // ─── Cashier Suggestions (Real-Time) ─────────────────────
 // This endpoint powers live cashier recommendations.
 // A Clover app, cashier tablet, or any POS integration hits this
@@ -2368,3 +2366,79 @@ router.post('/admin/demo/swap', authMiddleware, requireAdmin, async (req: Reques
     res.status(500).json({ error: 'Failed to swap demo brand', message: err instanceof Error ? err.message : String(err) });
   }
 });
+
+// ─── Dashboard Summary ───────────────────────────────────────────
+
+// GET /api/dashboard/summary — compact overview for the logged-in user
+router.get('/dashboard/summary', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const user = req.user!;
+    const orgId = user.organizationId;
+
+    // Fetch locations the user can access
+    let locations: { id: string; name: string }[];
+    if (user.role === 'MANAGER') {
+      const userLocs = await prisma.userLocation.findMany({
+        where: { userId: user.id },
+        include: { location: { select: { id: true, name: true } } },
+      });
+      locations = userLocs.map(ul => ul.location);
+    } else if (orgId) {
+      locations = await prisma.location.findMany({
+        where: { organizationId: orgId },
+        select: { id: true, name: true },
+      });
+    } else {
+      locations = [];
+    }
+
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const locationIds = locations.map(l => l.id);
+
+    // Aggregate orders for all accessible locations in the last 30 days
+    let totalOrders = 0;
+    let totalRevenue = 0;
+
+    if (locationIds.length > 0) {
+      const orderAgg = await prisma.order.aggregate({
+        where: {
+          locationId: { in: locationIds },
+          timestamp: { gte: thirtyDaysAgo },
+        },
+        _count: { id: true },
+        _sum: { total: true },
+      });
+      totalOrders = orderAgg._count.id;
+      totalRevenue = orderAgg._sum.total ?? 0;
+    }
+
+    // Revenue lift from first location (if any)
+    let revenueLift: { lift_percent: number; lift_dollars: number; confidence: number } | null = null;
+    if (locations.length > 0) {
+      try {
+        const ba = await getBeforeAfterRevenue(locations[0].id);
+        revenueLift = {
+          lift_percent: ba.lift_percent,
+          lift_dollars: ba.lift_dollars,
+          confidence: ba.confidence,
+        };
+      } catch (err) {
+        logger.warn('Dashboard', 'Failed to compute revenue lift for summary', err);
+      }
+    }
+
+    res.json({
+      total_locations: locations.length,
+      total_orders_30d: totalOrders,
+      total_revenue_30d: Math.round(totalRevenue * 100) / 100,
+      revenue_lift: revenueLift,
+    });
+  } catch (err) {
+    logger.error('Dashboard', 'Failed to build dashboard summary', err);
+    res.status(500).json({ error: 'Failed to build dashboard summary', message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+export default router;
