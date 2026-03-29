@@ -20,12 +20,20 @@ const logger_1 = require("../utils/logger");
 const billing_1 = __importDefault(require("./billing"));
 const auth_1 = __importDefault(require("./auth"));
 const auth_2 = require("./middleware/auth");
+const demo_seed_1 = require("../db/demo-seed");
+const demo_brands_1 = require("../db/demo-brands");
 const daily_summary_1 = require("../services/daily-summary");
 const alerts_1 = require("../services/alerts");
 const forecasting_1 = require("../services/forecasting");
 const food_cost_1 = require("../services/food-cost");
 const reviews_1 = require("../services/reviews");
 const email_1 = require("../services/email");
+const analytics_1 = require("../services/analytics");
+const notifications_1 = require("../services/notifications");
+const events_1 = require("../integrations/events");
+const labor_1 = require("../services/labor");
+const sync_3 = require("../integrations/square/sync");
+const sync_4 = require("../integrations/clover/sync");
 const router = (0, express_1.Router)();
 // ─── Billing ──────────────────────────────────────────────
 router.use('/billing', billing_1.default);
@@ -358,10 +366,19 @@ router.get('/onboard/status/:merchantId', async (req, res) => {
 });
 // ─── Locations ────────────────────────────────────────────
 router.get('/locations', auth_2.optionalAuth, async (req, res) => {
-    // Org-scoping: non-admin authenticated users only see their org's locations
-    const where = req.user && req.user.role !== 'ADMIN' && req.user.organizationId
-        ? { organizationId: req.user.organizationId }
-        : {};
+    let where = {};
+    if (req.user) {
+        if (req.user.role === 'MANAGER') {
+            // MANAGER: only assigned locations
+            const locationIds = await (0, auth_2.getUserLocationIds)(req.user.id);
+            where = { id: { in: locationIds } };
+        }
+        else if (req.user.role !== 'ADMIN' && req.user.organizationId) {
+            // OWNER: all locations in their org
+            where = { organizationId: req.user.organizationId };
+        }
+        // ADMIN: no filter
+    }
     const locations = await client_1.default.location.findMany({
         where,
         include: {
@@ -371,8 +388,12 @@ router.get('/locations', auth_2.optionalAuth, async (req, res) => {
     });
     res.json(locations);
 });
-router.get('/locations/:id', async (req, res) => {
+router.get('/locations/:id', auth_2.optionalAuth, async (req, res) => {
     const id = paramStr(req.params.id);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, id))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
     const location = await client_1.default.location.findUnique({
         where: { id },
         include: {
@@ -391,8 +412,12 @@ router.get('/locations/:id', async (req, res) => {
     res.json({ ...location, currentWeather: latestWeather });
 });
 // ─── Orders ───────────────────────────────────────────────
-router.get('/locations/:id/orders', async (req, res) => {
+router.get('/locations/:id/orders', auth_2.optionalAuth, async (req, res) => {
     const id = paramStr(req.params.id);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, id))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
     const limit = parseInt(req.query.limit) || 50;
     const offset = parseInt(req.query.offset) || 0;
     const orders = await client_1.default.order.findMany({
@@ -410,8 +435,12 @@ router.get('/locations/:id/orders', async (req, res) => {
     res.json({ orders, total, limit, offset });
 });
 // ─── Menu ─────────────────────────────────────────────────
-router.get('/locations/:id/menu', async (req, res) => {
+router.get('/locations/:id/menu', auth_2.optionalAuth, async (req, res) => {
     const id = paramStr(req.params.id);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, id))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
     const menuItems = await client_1.default.menuItem.findMany({
         where: { locationId: id, active: true },
         include: {
@@ -423,8 +452,12 @@ router.get('/locations/:id/menu', async (req, res) => {
     res.json(menuItems);
 });
 // ─── Weather ──────────────────────────────────────────────
-router.get('/locations/:id/weather', async (req, res) => {
+router.get('/locations/:id/weather', auth_2.optionalAuth, async (req, res) => {
     const id = paramStr(req.params.id);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, id))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
     const location = await client_1.default.location.findUnique({
         where: { id },
     });
@@ -461,8 +494,12 @@ router.get('/recommendations', async (_req, res) => {
     });
     res.json(recommendations);
 });
-router.get('/recommendations/:locationId', async (req, res) => {
+router.get('/recommendations/:locationId', auth_2.optionalAuth, async (req, res) => {
     const locationId = paramStr(req.params.locationId);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
     const recommendations = await client_1.default.recommendation.findMany({
         where: { locationId, status: 'active' },
         include: { menuItem: true },
@@ -543,8 +580,12 @@ function matchesTrigger(triggerType, triggerCondition, temperature, weatherCondi
             return false;
     }
 }
-router.get('/active-promos/:locationId', async (req, res) => {
+router.get('/active-promos/:locationId', auth_2.optionalAuth, async (req, res) => {
     const locationId = paramStr(req.params.locationId);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
     try {
         const location = await client_1.default.location.findUnique({ where: { id: locationId } });
         if (!location) {
@@ -1030,8 +1071,12 @@ router.post('/clover/analyze', async (req, res) => {
 });
 // ─── AI Sales Forecasting ────────────────────────────────
 // GET /api/forecast/:locationId — generate 7-day sales forecast
-router.get('/forecast/:locationId', async (req, res) => {
+router.get('/forecast/:locationId', auth_2.optionalAuth, async (req, res) => {
     const locationId = paramStr(req.params.locationId);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
     try {
         const forecast = await (0, forecasting_1.generateForecast)(locationId);
         res.json({
@@ -1047,8 +1092,12 @@ router.get('/forecast/:locationId', async (req, res) => {
 });
 // ─── Food Cost Tracker ───────────────────────────────────
 // POST /api/food-cost/:locationId/items — add/update ingredient costs for a menu item
-router.post('/food-cost/:locationId/items', async (req, res) => {
+router.post('/food-cost/:locationId/items', auth_2.optionalAuth, async (req, res) => {
     const locationId = paramStr(req.params.locationId);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
     const { menuItemId, ingredients } = req.body;
     if (!menuItemId || !ingredients || !Array.isArray(ingredients)) {
         res.status(400).json({ error: 'Missing required fields: menuItemId, ingredients[]' });
@@ -1064,8 +1113,12 @@ router.post('/food-cost/:locationId/items', async (req, res) => {
     }
 });
 // GET /api/food-cost/:locationId — get all items with food cost analysis
-router.get('/food-cost/:locationId', async (req, res) => {
+router.get('/food-cost/:locationId', auth_2.optionalAuth, async (req, res) => {
     const locationId = paramStr(req.params.locationId);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
     try {
         const items = await (0, food_cost_1.getFoodCostAnalysis)(locationId);
         res.json({ locationId, items });
@@ -1076,8 +1129,12 @@ router.get('/food-cost/:locationId', async (req, res) => {
     }
 });
 // GET /api/food-cost/:locationId/summary — overall food cost % and breakdown
-router.get('/food-cost/:locationId/summary', async (req, res) => {
+router.get('/food-cost/:locationId/summary', auth_2.optionalAuth, async (req, res) => {
     const locationId = paramStr(req.params.locationId);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
     try {
         const summary = await (0, food_cost_1.getFoodCostSummary)(locationId);
         res.json(summary);
@@ -1089,8 +1146,12 @@ router.get('/food-cost/:locationId/summary', async (req, res) => {
 });
 // ─── Review Monitoring ───────────────────────────────────
 // GET /api/reviews/:locationId — get recent reviews
-router.get('/reviews/:locationId', async (req, res) => {
+router.get('/reviews/:locationId', auth_2.optionalAuth, async (req, res) => {
     const locationId = paramStr(req.params.locationId);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
     try {
         const reviews = await (0, reviews_1.getReviews)(locationId);
         res.json({
@@ -1120,13 +1181,16 @@ router.post('/reviews/:id/draft-response', async (req, res) => {
         res.status(500).json({ error: 'Failed to generate draft response', message: err instanceof Error ? err.message : String(err) });
     }
 });
-exports.default = router;
 // ─── Cashier Suggestions (Real-Time) ─────────────────────
 // This endpoint powers live cashier recommendations.
 // A Clover app, cashier tablet, or any POS integration hits this
 // to get the top items to suggest RIGHT NOW based on current conditions.
-router.get('/cashier/suggest/:locationId', async (req, res) => {
+router.get('/cashier/suggest/:locationId', auth_2.optionalAuth, async (req, res) => {
     const locationId = paramStr(req.params.locationId);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
     try {
         const location = await client_1.default.location.findUnique({ where: { id: locationId } });
         if (!location) {
@@ -1593,8 +1657,12 @@ router.post('/reports/daily-summary', async (req, res) => {
     }
 });
 // GET /api/reports/daily-summary/:locationId — retrieve the latest summary
-router.get('/reports/daily-summary/:locationId', async (req, res) => {
+router.get('/reports/daily-summary/:locationId', auth_2.optionalAuth, async (req, res) => {
     const locationId = paramStr(req.params.locationId);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
     try {
         const summary = await client_1.default.dailySummary.findFirst({
             where: { locationId },
@@ -1616,8 +1684,12 @@ router.get('/reports/daily-summary/:locationId', async (req, res) => {
 });
 // ─── Smart Alerts ────────────────────────────────────────
 // GET /api/alerts/:locationId — get active alerts for a location
-router.get('/alerts/:locationId', async (req, res) => {
+router.get('/alerts/:locationId', auth_2.optionalAuth, async (req, res) => {
     const locationId = paramStr(req.params.locationId);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
     try {
         // Run alert evaluation first to ensure alerts are current
         await (0, alerts_1.evaluateAlerts)(locationId);
@@ -1680,4 +1752,441 @@ router.post('/email/test-digest', async (req, res) => {
         res.status(500).json({ error: 'Failed to send test digest', message: err instanceof Error ? err.message : String(err) });
     }
 });
+// ─── Before / After Revenue Dashboard ────────────────────────────
+// GET /api/analytics/before-after/:locationId — revenue lift since install
+router.get('/analytics/before-after/:locationId', auth_2.optionalAuth, async (req, res) => {
+    const locationId = paramStr(req.params.locationId);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
+    try {
+        const result = await (0, analytics_1.getBeforeAfterRevenue)(locationId);
+        res.json(result);
+    }
+    catch (err) {
+        logger_1.logger.error('Analytics', 'Failed to compute before/after revenue', err);
+        res.status(500).json({ error: 'Failed to compute before/after revenue', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// GET /api/analytics/attribution/:locationId — recommendation attribution
+router.get('/analytics/attribution/:locationId', auth_2.optionalAuth, async (req, res) => {
+    const locationId = paramStr(req.params.locationId);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
+    try {
+        const result = await (0, analytics_1.getAttribution)(locationId);
+        res.json(result);
+    }
+    catch (err) {
+        logger_1.logger.error('Analytics', 'Failed to compute attribution', err);
+        res.status(500).json({ error: 'Failed to compute attribution', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// ─── Daily Summary Notification ──────────────────────────────────
+// POST /api/notifications/daily-summary/:locationId — generate SMS + email formatted summary
+router.post('/notifications/daily-summary/:locationId', auth_2.optionalAuth, async (req, res) => {
+    const locationId = paramStr(req.params.locationId);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
+    try {
+        const result = await (0, notifications_1.generateNotification)(locationId);
+        res.json({
+            sms: result.sms,
+            sms_length: result.sms.length,
+            email: result.email,
+            summary: result.summary,
+        });
+    }
+    catch (err) {
+        logger_1.logger.error('Notifications', 'Failed to generate notification', err);
+        res.status(500).json({ error: 'Failed to generate notification', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// ─── Local Events ────────────────────────────────────────────────
+// GET /api/events/:locationId — upcoming events that may affect the location
+router.get('/events/:locationId', auth_2.optionalAuth, async (req, res) => {
+    const locationId = paramStr(req.params.locationId);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
+    const days = parseInt(req.query.days) || 14;
+    try {
+        const location = await client_1.default.location.findUnique({ where: { id: locationId } });
+        if (!location) {
+            res.status(404).json({ error: "Location not found" });
+            return;
+        }
+        const events = (0, events_1.getUpcomingEvents)(location.lat, location.lng, days);
+        res.json({
+            location_id: locationId,
+            location_name: location.name,
+            days_ahead: days,
+            events,
+            event_type_ranges: events_1.EVENT_TYPE_RANGES,
+        });
+    }
+    catch (err) {
+        logger_1.logger.error('Events', 'Failed to fetch events', err);
+        res.status(500).json({ error: 'Failed to fetch events', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// ─── Labor Optimization ──────────────────────────────────────────
+// GET /api/labor/analysis/:locationId — Full labor efficiency analysis
+router.get('/labor/analysis/:locationId', auth_2.optionalAuth, async (req, res) => {
+    const locationId = paramStr(req.params.locationId);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
+    const days = parseInt(req.query.days) || 30;
+    try {
+        // Ensure labor targets exist
+        const existingTargets = await client_1.default.laborTarget.count({ where: { locationId } });
+        if (existingTargets === 0) {
+            await (0, labor_1.seedDefaultLaborTargets)(locationId);
+        }
+        const analysis = await (0, labor_1.analyzeLaborEfficiency)(locationId, days);
+        res.json(analysis);
+    }
+    catch (err) {
+        logger_1.logger.error('Labor', 'Failed to analyze labor efficiency', err);
+        res.status(500).json({ error: 'Failed to analyze labor efficiency', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// GET /api/labor/recommendation/:locationId — Staffing recommendation for a date
+router.get('/labor/recommendation/:locationId', auth_2.optionalAuth, async (req, res) => {
+    const locationId = paramStr(req.params.locationId);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const date = req.query.date || tomorrow.toISOString().split('T')[0];
+    try {
+        // Ensure labor targets exist
+        const existingTargets = await client_1.default.laborTarget.count({ where: { locationId } });
+        if (existingTargets === 0) {
+            await (0, labor_1.seedDefaultLaborTargets)(locationId);
+        }
+        const recommendation = await (0, labor_1.generateStaffingRecommendation)(locationId, date);
+        res.json(recommendation);
+    }
+    catch (err) {
+        logger_1.logger.error('Labor', 'Failed to generate staffing recommendation', err);
+        res.status(500).json({ error: 'Failed to generate recommendation', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// GET /api/labor/weekly-plan/:locationId — Full week staffing plan
+router.get('/labor/weekly-plan/:locationId', auth_2.optionalAuth, async (req, res) => {
+    const locationId = paramStr(req.params.locationId);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const start = req.query.start || tomorrow.toISOString().split('T')[0];
+    try {
+        // Ensure labor targets exist
+        const existingTargets = await client_1.default.laborTarget.count({ where: { locationId } });
+        if (existingTargets === 0) {
+            await (0, labor_1.seedDefaultLaborTargets)(locationId);
+        }
+        const plan = await (0, labor_1.generateWeeklyLaborPlan)(locationId, start);
+        res.json(plan);
+    }
+    catch (err) {
+        logger_1.logger.error('Labor', 'Failed to generate weekly labor plan', err);
+        res.status(500).json({ error: 'Failed to generate weekly plan', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// GET /api/labor/waste/:locationId — Labor waste calculation (the closer)
+router.get('/labor/waste/:locationId', auth_2.optionalAuth, async (req, res) => {
+    const locationId = paramStr(req.params.locationId);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
+    const days = parseInt(req.query.days) || 30;
+    try {
+        // Ensure labor targets exist
+        const existingTargets = await client_1.default.laborTarget.count({ where: { locationId } });
+        if (existingTargets === 0) {
+            await (0, labor_1.seedDefaultLaborTargets)(locationId);
+        }
+        const waste = await (0, labor_1.calculateLaborWaste)(locationId, days);
+        res.json(waste);
+    }
+    catch (err) {
+        logger_1.logger.error('Labor', 'Failed to calculate labor waste', err);
+        res.status(500).json({ error: 'Failed to calculate labor waste', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// POST /api/labor/targets/:locationId — Set/update labor targets
+router.post('/labor/targets/:locationId', auth_2.optionalAuth, async (req, res) => {
+    const locationId = paramStr(req.params.locationId);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
+    const { targets } = req.body;
+    if (!targets || !Array.isArray(targets)) {
+        res.status(400).json({ error: 'Missing targets array in body' });
+        return;
+    }
+    try {
+        const results = [];
+        for (const t of targets) {
+            const result = await client_1.default.laborTarget.upsert({
+                where: {
+                    locationId_dayOfWeek_daypart: {
+                        locationId,
+                        dayOfWeek: t.dayOfWeek,
+                        daypart: t.daypart,
+                    },
+                },
+                create: {
+                    locationId,
+                    dayOfWeek: t.dayOfWeek,
+                    daypart: t.daypart,
+                    targetLaborPct: t.targetLaborPct ?? 28,
+                    minStaff: t.minStaff ?? 2,
+                    maxStaff: t.maxStaff ?? 10,
+                    revenuePerStaffHour: t.revenuePerStaffHour ?? 75,
+                },
+                update: {
+                    ...(t.targetLaborPct !== undefined && { targetLaborPct: t.targetLaborPct }),
+                    ...(t.minStaff !== undefined && { minStaff: t.minStaff }),
+                    ...(t.maxStaff !== undefined && { maxStaff: t.maxStaff }),
+                    ...(t.revenuePerStaffHour !== undefined && { revenuePerStaffHour: t.revenuePerStaffHour }),
+                },
+            });
+            results.push(result);
+        }
+        res.json({ updated: results.length, targets: results });
+    }
+    catch (err) {
+        logger_1.logger.error('Labor', 'Failed to update labor targets', err);
+        res.status(500).json({ error: 'Failed to update labor targets', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// GET /api/labor/targets/:locationId — Get current labor targets
+router.get('/labor/targets/:locationId', auth_2.optionalAuth, async (req, res) => {
+    const locationId = paramStr(req.params.locationId);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
+    try {
+        let targets = await client_1.default.laborTarget.findMany({
+            where: { locationId },
+            orderBy: [{ dayOfWeek: 'asc' }, { daypart: 'asc' }],
+        });
+        // Seed defaults if none exist
+        if (targets.length === 0) {
+            await (0, labor_1.seedDefaultLaborTargets)(locationId);
+            targets = await client_1.default.laborTarget.findMany({
+                where: { locationId },
+                orderBy: [{ dayOfWeek: 'asc' }, { daypart: 'asc' }],
+            });
+        }
+        res.json({ locationId, targets });
+    }
+    catch (err) {
+        logger_1.logger.error('Labor', 'Failed to fetch labor targets', err);
+        res.status(500).json({ error: 'Failed to fetch labor targets', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// POST /api/labor/sync/:locationId — Trigger manual labor data sync from POS
+router.post('/labor/sync/:locationId', auth_2.optionalAuth, async (req, res) => {
+    const locationId = paramStr(req.params.locationId);
+    if (req.user && !(await (0, auth_2.canAccessLocation)(req.user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
+    try {
+        const location = await client_1.default.location.findUnique({ where: { id: locationId } });
+        if (!location) {
+            res.status(404).json({ error: "Location not found" });
+            return;
+        }
+        let synced = 0;
+        let source = 'none';
+        if (location.squareAccessToken) {
+            synced = await (0, sync_3.syncSquareLabor)(locationId);
+            source = 'square';
+        }
+        else if (location.cloverApiToken) {
+            synced = await (0, sync_4.syncCloverLabor)(locationId);
+            source = 'clover';
+        }
+        else {
+            res.status(400).json({ error: 'No POS connected for this location' });
+            return;
+        }
+        res.json({
+            success: true,
+            source,
+            shiftsImported: synced,
+            message: `Synced ${synced} shifts from ${source}`,
+        });
+    }
+    catch (err) {
+        logger_1.logger.error('Labor', 'Failed to sync labor data', err);
+        res.status(500).json({ error: 'Failed to sync labor data', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// ─── Demo Admin Routes ──────────────────────────────────────
+// All demo routes require ADMIN auth
+// POST /api/admin/demo/seed — Seed demo data for a brand
+router.post('/admin/demo/seed', auth_2.authMiddleware, auth_2.requireAdmin, async (req, res) => {
+    const brand = req.body?.brand;
+    if (!brand) {
+        res.status(400).json({ error: 'Missing brand field', availableBrands: (0, demo_brands_1.listBrands)() });
+        return;
+    }
+    const config = (0, demo_brands_1.getBrandConfig)(brand);
+    if (!config) {
+        res.status(400).json({ error: `Unknown brand: ${brand}`, availableBrands: (0, demo_brands_1.listBrands)() });
+        return;
+    }
+    try {
+        logger_1.logger.info('Demo', `Seeding demo data for brand: ${brand}`);
+        const result = await (0, demo_seed_1.seedDemoOrganization)(config);
+        logger_1.logger.info('Demo', `Demo seed complete: ${result.locationCount} locations, ${result.orderCount} orders`);
+        res.json({ success: true, ...result });
+    }
+    catch (err) {
+        logger_1.logger.error('Demo', 'Failed to seed demo data', err);
+        res.status(500).json({ error: 'Failed to seed demo data', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// POST /api/admin/demo/clear — Remove all demo data
+router.post('/admin/demo/clear', auth_2.authMiddleware, auth_2.requireAdmin, async (_req, res) => {
+    try {
+        logger_1.logger.info('Demo', 'Clearing all demo data');
+        const result = await (0, demo_seed_1.clearDemoData)();
+        res.json({ success: true, ...result });
+    }
+    catch (err) {
+        logger_1.logger.error('Demo', 'Failed to clear demo data', err);
+        res.status(500).json({ error: 'Failed to clear demo data', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// GET /api/admin/demo/status — Get current demo org info
+router.get('/admin/demo/status', auth_2.authMiddleware, auth_2.requireAdmin, async (_req, res) => {
+    try {
+        const status = await (0, demo_seed_1.getDemoStatus)();
+        res.json(status);
+    }
+    catch (err) {
+        logger_1.logger.error('Demo', 'Failed to get demo status', err);
+        res.status(500).json({ error: 'Failed to get demo status', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// POST /api/admin/demo/swap — Swap to a different brand
+router.post('/admin/demo/swap', auth_2.authMiddleware, auth_2.requireAdmin, async (req, res) => {
+    const brand = req.body?.brand;
+    if (!brand) {
+        res.status(400).json({ error: 'Missing brand field', availableBrands: (0, demo_brands_1.listBrands)() });
+        return;
+    }
+    const config = (0, demo_brands_1.getBrandConfig)(brand);
+    if (!config) {
+        res.status(400).json({ error: `Unknown brand: ${brand}`, availableBrands: (0, demo_brands_1.listBrands)() });
+        return;
+    }
+    try {
+        logger_1.logger.info('Demo', `Swapping demo brand to: ${brand}`);
+        const result = await (0, demo_seed_1.swapDemoBrand)(brand);
+        res.json({ success: true, ...result });
+    }
+    catch (err) {
+        logger_1.logger.error('Demo', 'Failed to swap demo brand', err);
+        res.status(500).json({ error: 'Failed to swap demo brand', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// ─── Dashboard Summary ───────────────────────────────────────────
+// GET /api/dashboard/summary — compact overview for the logged-in user
+router.get('/dashboard/summary', auth_2.authMiddleware, async (req, res) => {
+    try {
+        const user = req.user;
+        const orgId = user.organizationId;
+        // Fetch locations the user can access
+        let locations;
+        if (user.role === 'MANAGER') {
+            const userLocs = await client_1.default.userLocation.findMany({
+                where: { userId: user.id },
+                include: { location: { select: { id: true, name: true } } },
+            });
+            locations = userLocs.map(ul => ul.location);
+        }
+        else if (user.role === 'ADMIN') {
+            // ADMIN god-view: all locations across all orgs
+            locations = await client_1.default.location.findMany({
+                select: { id: true, name: true },
+            });
+        }
+        else if (orgId) {
+            locations = await client_1.default.location.findMany({
+                where: { organizationId: orgId },
+                select: { id: true, name: true },
+            });
+        }
+        else {
+            locations = [];
+        }
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        const locationIds = locations.map(l => l.id);
+        // Aggregate orders for all accessible locations in the last 30 days
+        let totalOrders = 0;
+        let totalRevenue = 0;
+        if (locationIds.length > 0) {
+            const orderAgg = await client_1.default.order.aggregate({
+                where: {
+                    locationId: { in: locationIds },
+                    timestamp: { gte: thirtyDaysAgo },
+                },
+                _count: { id: true },
+                _sum: { total: true },
+            });
+            totalOrders = orderAgg._count.id;
+            totalRevenue = orderAgg._sum.total ?? 0;
+        }
+        // Revenue lift from first location (if any)
+        let revenueLift = null;
+        if (locations.length > 0) {
+            try {
+                const ba = await (0, analytics_1.getBeforeAfterRevenue)(locations[0].id);
+                revenueLift = {
+                    lift_percent: ba.lift_percent,
+                    lift_dollars: ba.lift_dollars,
+                    confidence: ba.confidence,
+                };
+            }
+            catch (err) {
+                logger_1.logger.warn('Dashboard', 'Failed to compute revenue lift for summary', err);
+            }
+        }
+        res.json({
+            total_locations: locations.length,
+            total_orders_30d: totalOrders,
+            total_revenue_30d: Math.round(totalRevenue * 100) / 100,
+            revenue_lift: revenueLift,
+        });
+    }
+    catch (err) {
+        logger_1.logger.error('Dashboard', 'Failed to build dashboard summary', err);
+        res.status(500).json({ error: 'Failed to build dashboard summary', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+exports.default = router;
 //# sourceMappingURL=routes.js.map

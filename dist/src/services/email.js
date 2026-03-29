@@ -15,7 +15,7 @@ function getResend() {
     return new resend_1.Resend(key);
 }
 const DASHBOARD_URL = 'https://usetempoai.com';
-const FROM_EMAIL = 'TempoAi <onboarding@resend.dev>';
+const FROM_EMAIL = 'TempoAi <hello@usetempoai.com>';
 function formatCurrency(amount) {
     return `$${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
@@ -441,6 +441,10 @@ function buildMockSummary() {
         prevWeekOrders: 132,
         changePercent: 14.5,
         weatherNote: 'Partly Cloudy, 72°F, no precipitation',
+        weatherImpactNote: 'clear skies boosting patio/walk-in traffic (~+5%)',
+        topRecommendation: 'PROMOTE: Truffle Burger — strong lunch performer on clear days (expected +23%)',
+        beforeAfterSnippet: 'Since TempoAi (45d): avg daily revenue up 12.3% ($3,200 -> $3,594)',
+        upcomingEvents: null,
     };
 }
 //# sourceMappingURL=email.js.map

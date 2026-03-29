@@ -2383,6 +2383,11 @@ router.get('/dashboard/summary', authMiddleware, async (req: Request, res: Respo
         include: { location: { select: { id: true, name: true } } },
       });
       locations = userLocs.map(ul => ul.location);
+    } else if (user.role === 'ADMIN') {
+      // ADMIN god-view: all locations across all orgs
+      locations = await prisma.location.findMany({
+        select: { id: true, name: true },
+      });
     } else if (orgId) {
       locations = await prisma.location.findMany({
         where: { organizationId: orgId },

@@ -8,6 +8,7 @@ exports.syncCloverOrders = syncCloverOrders;
 exports.syncCloverPayments = syncCloverPayments;
 exports.syncAllCloverLocations = syncAllCloverLocations;
 exports.initialCloverSync = initialCloverSync;
+exports.syncCloverLabor = syncCloverLabor;
 exports.startCloverSyncSchedule = startCloverSyncSchedule;
 const node_cron_1 = __importDefault(require("node-cron"));
 const client_1 = __importDefault(require("../../db/client"));
@@ -192,6 +193,90 @@ async function initialCloverSync(locationId) {
     const catalog = await syncCloverCatalog(locationId);
     const orders = await syncCloverOrders(locationId, ninetyDaysAgo);
     return { catalog, orders };
+}
+/**
+ * Sync labor/shift data from Clover Employees & Shifts APIs.
+ */
+async function syncCloverLabor(locationId) {
+    const location = await client_1.default.location.findUnique({ where: { id: locationId } });
+    if (!location?.cloverApiToken || !location.cloverMerchantId) {
+        logger_1.logger.warn('CloverSync', `No Clover credentials for location ${locationId}`);
+        return 0;
+    }
+    try {
+        const token = (0, encryption_1.decrypt)(location.cloverApiToken);
+        const mId = location.cloverMerchantId;
+        const baseUrl = process.env.CLOVER_ENVIRONMENT === 'production'
+            ? 'https://api.clover.com'
+            : 'https://apisandbox.dev.clover.com';
+        const headers = {
+            'Authorization': `Bearer ${token}`,
+            'Accept': 'application/json',
+        };
+        // Fetch employees
+        const empResp = await fetch(`${baseUrl}/v3/merchants/${mId}/employees?limit=100`, { headers });
+        const empData = (await empResp.json());
+        const employees = empData.elements ?? [];
+        const empMap = new Map();
+        for (const emp of employees) {
+            empMap.set(emp.id, {
+                name: emp.name ?? emp.id,
+                role: emp.role ?? 'staff',
+            });
+        }
+        // Fetch shifts (last 90 days)
+        const sinceMs = Date.now() - NINETY_DAYS_MS;
+        const shiftsResp = await fetch(`${baseUrl}/v3/merchants/${mId}/shifts?filter=inTime>=${sinceMs}&limit=100`, { headers });
+        const shiftsData = (await shiftsResp.json());
+        const shifts = shiftsData.elements ?? [];
+        let count = 0;
+        for (const shift of shifts) {
+            if (!shift.inTime || !shift.outTime)
+                continue; // skip open shifts
+            const startTime = new Date(shift.inTime);
+            const endTime = new Date(shift.outTime);
+            const totalHours = (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60);
+            const empId = shift.employee?.id ?? null;
+            const empInfo = empId ? empMap.get(empId) : null;
+            await client_1.default.staffShift.create({
+                data: {
+                    locationId,
+                    employeeId: empId,
+                    employeeName: empInfo?.name ?? null,
+                    role: empInfo?.role ?? 'staff',
+                    startTime,
+                    endTime,
+                    hourlyRate: null, // Clover doesn't expose hourly rate in shifts API
+                    totalHours: Math.round(totalHours * 100) / 100,
+                    totalCost: null,
+                    source: 'clover',
+                },
+            });
+            count++;
+        }
+        await client_1.default.syncLog.create({
+            data: {
+                locationId,
+                source: 'clover_labor',
+                status: 'success',
+                recordsProcessed: count,
+            },
+        });
+        logger_1.logger.info('CloverSync', `Synced ${count} labor shifts for ${locationId}`);
+        return count;
+    }
+    catch (err) {
+        await client_1.default.syncLog.create({
+            data: {
+                locationId,
+                source: 'clover_labor',
+                status: 'error',
+                error: err instanceof Error ? err.message : String(err),
+            },
+        });
+        logger_1.logger.error('CloverSync', `Failed to sync labor for ${locationId}`, err);
+        return 0;
+    }
 }
 function startCloverSyncSchedule() {
     if (process.env.DEMO_MODE === 'true') {

@@ -6,7 +6,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.authMiddleware = authMiddleware;
 exports.optionalAuth = optionalAuth;
 exports.requireAdmin = requireAdmin;
+exports.requireOwnerOrAbove = requireOwnerOrAbove;
+exports.getUserLocationIds = getUserLocationIds;
+exports.canAccessLocation = canAccessLocation;
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
+const client_1 = __importDefault(require("../../db/client"));
 const JWT_SECRET = process.env.JWT_SECRET || 'tempoai-dev-secret';
 /**
  * Required auth — rejects 401 if no valid JWT.
@@ -65,5 +69,49 @@ function requireAdmin(req, res, next) {
         return;
     }
     next();
+}
+/**
+ * Requires ADMIN or OWNER role — blocks MANAGER.
+ */
+function requireOwnerOrAbove(req, res, next) {
+    if (!req.user || (req.user.role !== 'ADMIN' && req.user.role !== 'OWNER')) {
+        res.status(403).json({ error: 'Owner or admin access required' });
+        return;
+    }
+    next();
+}
+/**
+ * Get the location IDs a MANAGER user is assigned to.
+ */
+async function getUserLocationIds(userId) {
+    const assignments = await client_1.default.userLocation.findMany({
+        where: { userId },
+        select: { locationId: true },
+    });
+    return assignments.map((a) => a.locationId);
+}
+/**
+ * Check if a user can access a specific location.
+ * ADMIN: always allowed.
+ * OWNER: allowed if location belongs to their org.
+ * MANAGER: allowed only if they have a UserLocation record.
+ */
+async function canAccessLocation(user, locationId) {
+    if (user.role === 'ADMIN')
+        return true;
+    if (user.role === 'OWNER') {
+        if (!user.organizationId)
+            return false;
+        const location = await client_1.default.location.findUnique({
+            where: { id: locationId },
+            select: { organizationId: true },
+        });
+        return location?.organizationId === user.organizationId;
+    }
+    // MANAGER
+    const assignment = await client_1.default.userLocation.findUnique({
+        where: { userId_locationId: { userId: user.id, locationId } },
+    });
+    return !!assignment;
 }
 //# sourceMappingURL=auth.js.map

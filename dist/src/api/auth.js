@@ -264,5 +264,62 @@ router.post('/verify-email', async (req, res) => {
         res.status(500).json({ error: 'Failed to verify email' });
     }
 });
+// ─── POST /invite ────────────────────────────────────────
+router.post('/invite', auth_1.authMiddleware, auth_1.requireOwnerOrAbove, async (req, res) => {
+    try {
+        const { email, name, role, locationIds, organizationId: bodyOrgId } = req.body;
+        if (!email || !name || !role) {
+            res.status(400).json({ error: 'email, name, and role are required' });
+            return;
+        }
+        if (role !== 'OWNER' && role !== 'MANAGER') {
+            res.status(400).json({ error: 'role must be OWNER or MANAGER' });
+            return;
+        }
+        if (role === 'MANAGER' && (!locationIds || locationIds.length === 0)) {
+            res.status(400).json({ error: 'locationIds is required for MANAGER role' });
+            return;
+        }
+        const existing = await client_1.default.user.findUnique({ where: { email } });
+        if (existing) {
+            res.status(409).json({ error: 'An account with this email already exists' });
+            return;
+        }
+        // Determine org: ADMIN can specify, OWNER uses their own
+        const orgId = req.user.role === 'ADMIN' && bodyOrgId
+            ? bodyOrgId
+            : req.user.organizationId;
+        if (!orgId) {
+            res.status(400).json({ error: 'No organization context available' });
+            return;
+        }
+        const tempPassword = generateTempPassword();
+        const passwordHash = await bcryptjs_1.default.hash(tempPassword, 12);
+        const user = await client_1.default.user.create({
+            data: {
+                email,
+                passwordHash,
+                name,
+                role,
+                organizationId: orgId,
+                emailVerified: true,
+            },
+        });
+        // Create UserLocation assignments for MANAGER
+        if (role === 'MANAGER' && locationIds) {
+            for (const locationId of locationIds) {
+                await client_1.default.userLocation.create({
+                    data: { userId: user.id, locationId },
+                });
+            }
+        }
+        logger_1.logger.info('Auth', `User invited: ${email} (role: ${role}) by ${req.user.email}`);
+        res.status(201).json({ user: sanitizeUser(user), tempPassword });
+    }
+    catch (err) {
+        console.error('Invite error:', err);
+        res.status(500).json({ error: 'Invite failed' });
+    }
+});
 exports.default = router;
 //# sourceMappingURL=auth.js.map

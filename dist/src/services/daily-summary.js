@@ -7,6 +7,8 @@ exports.generateDailySummary = generateDailySummary;
 exports.generateAllDailySummaries = generateAllDailySummaries;
 const client_1 = __importDefault(require("../db/client"));
 const logger_1 = require("../utils/logger");
+const analytics_1 = require("./analytics");
+const events_1 = require("../integrations/events");
 function startOfDay(date) {
     const d = new Date(date);
     d.setHours(0, 0, 0, 0);
@@ -18,7 +20,10 @@ function endOfDay(date) {
     return d;
 }
 async function generateDailySummary(locationId, date = new Date()) {
-    const location = await client_1.default.location.findUniqueOrThrow({ where: { id: locationId } });
+    const location = await client_1.default.location.findUnique({ where: { id: locationId } });
+    if (!location) {
+        throw new Error(`Location ${locationId} not found`);
+    }
     const dayStart = startOfDay(date);
     const dayEnd = endOfDay(date);
     // Get today's orders
@@ -77,8 +82,57 @@ async function generateDailySummary(locationId, date = new Date()) {
         orderBy: { timestamp: 'desc' },
     });
     let weatherNote = null;
+    let weatherImpactNote = null;
     if (weatherSnapshot) {
         weatherNote = `${weatherSnapshot.conditions}, ${Math.round(weatherSnapshot.temperature)}°F, ${weatherSnapshot.precipitation > 0 ? `${weatherSnapshot.precipitation}mm precip` : 'no precipitation'}`;
+        // Weather impact note
+        const cond = weatherSnapshot.conditions.toLowerCase();
+        const temp = weatherSnapshot.temperature;
+        const impacts = [];
+        if (cond.includes('rain') || cond.includes('drizzle'))
+            impacts.push('rain reducing foot traffic (~-10%)');
+        if (cond.includes('snow') || cond.includes('blizzard'))
+            impacts.push('snow significantly reducing traffic (~-20%)');
+        if (cond.includes('thunder') || cond.includes('storm'))
+            impacts.push('storms keeping customers home (~-15%)');
+        if (cond.includes('sunny') || cond.includes('clear'))
+            impacts.push('clear skies boosting patio/walk-in traffic (~+5%)');
+        if (temp < 25)
+            impacts.push('extreme cold suppressing dine-in (~-15%)');
+        else if (temp > 95)
+            impacts.push('extreme heat shifting orders to delivery (~-10%)');
+        if (cond.includes('rain') || cond.includes('snow') || cond.includes('storm')) {
+            impacts.push('comfort food promos recommended');
+        }
+        weatherImpactNote = impacts.length > 0 ? impacts.join('; ') : 'Normal weather — no significant impact expected';
+    }
+    // Top AI recommendation that fired today
+    let topRecommendation = null;
+    try {
+        const topRec = await client_1.default.recommendation.findFirst({
+            where: { locationId, currentlyActive: true },
+            orderBy: { expectedLift: 'desc' },
+            include: { menuItem: true },
+        });
+        if (topRec) {
+            topRecommendation = `${topRec.type.toUpperCase()}: ${topRec.menuItem.name} — ${topRec.message} (expected +${topRec.expectedLift.toFixed(0)}%)`;
+        }
+    }
+    catch {
+        // Non-critical
+    }
+    // Before/after comparison snippet
+    const beforeAfterSnippet = await (0, analytics_1.getBeforeAfterSnippet)(locationId);
+    // Upcoming events
+    let upcomingEvents = null;
+    try {
+        const events = (0, events_1.getUpcomingEvents)(location.lat, location.lng, 7);
+        if (events.length > 0) {
+            upcomingEvents = events.map(e => `${e.date}: ${e.name} (${e.impact_multiplier > 1 ? '+' : ''}${Math.round((e.impact_multiplier - 1) * 100)}%)`).join(', ');
+        }
+    }
+    catch {
+        // Non-critical
     }
     const dateStr = dayStart.toISOString().split('T')[0];
     const summaryData = {
@@ -93,6 +147,10 @@ async function generateDailySummary(locationId, date = new Date()) {
         prevWeekOrders: prevWeekOrders > 0 ? prevWeekOrders : null,
         changePercent: changePercent !== null ? Math.round(changePercent * 10) / 10 : null,
         weatherNote,
+        weatherImpactNote,
+        topRecommendation,
+        beforeAfterSnippet,
+        upcomingEvents,
     };
     // Build human-readable summary
     const lines = [
@@ -108,6 +166,18 @@ async function generateDailySummary(locationId, date = new Date()) {
     }
     if (weatherNote) {
         lines.push(`Weather: ${weatherNote}`);
+    }
+    if (weatherImpactNote) {
+        lines.push(`Weather Impact: ${weatherImpactNote}`);
+    }
+    if (topRecommendation) {
+        lines.push(`Top AI Rec: ${topRecommendation}`);
+    }
+    if (beforeAfterSnippet) {
+        lines.push(beforeAfterSnippet);
+    }
+    if (upcomingEvents) {
+        lines.push(`Upcoming Events: ${upcomingEvents}`);
     }
     const summary = lines.join('\n');
     // Persist to DB

@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.generateForecast = generateForecast;
 const client_1 = __importDefault(require("../db/client"));
 const logger_1 = require("../utils/logger");
+const events_1 = require("../integrations/events");
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 /**
  * Fetch 7-day weather forecast from wttr.in for a city.
@@ -155,6 +156,12 @@ async function generateForecast(locationId) {
             predictedSales *= (1 + weatherImpact);
             predictedOrders = Math.round(predictedOrders * (1 + weatherImpact));
         }
+        // Apply event impact
+        const eventImpact = (0, events_1.getEventImpactForDate)(dateStr);
+        if (eventImpact.event) {
+            predictedSales *= eventImpact.multiplier;
+            predictedOrders = Math.round(predictedOrders * eventImpact.multiplier);
+        }
         // Ensure non-negative
         predictedSales = Math.max(0, Math.round(predictedSales * 100) / 100);
         predictedOrders = Math.max(0, predictedOrders);
@@ -183,6 +190,9 @@ async function generateForecast(locationId) {
                 direction: trendPercent > 2 ? 'up' : trendPercent < -2 ? 'down' : 'stable',
                 percentChange: Math.round(trendPercent * 10) / 10,
             },
+            event: eventImpact.event
+                ? { name: eventImpact.event.name, type: eventImpact.event.type, impact: Math.round((eventImpact.multiplier - 1) * 100) }
+                : null,
         };
         const staffing = getStaffingRecommendation(predictedSales, dayName);
         forecasts.push({

@@ -8,6 +8,7 @@ exports.syncLocationOrders = syncLocationOrders;
 exports.syncLocationPayments = syncLocationPayments;
 exports.syncAllLocations = syncAllLocations;
 exports.initialSync = initialSync;
+exports.syncSquareLabor = syncSquareLabor;
 exports.startSyncSchedule = startSyncSchedule;
 const node_cron_1 = __importDefault(require("node-cron"));
 const client_1 = __importDefault(require("../../db/client"));
@@ -187,6 +188,116 @@ async function initialSync(locationId) {
     const catalog = await syncLocationCatalog(locationId);
     const orders = await syncLocationOrders(locationId, ninetyDaysAgo);
     return { catalog, orders };
+}
+/**
+ * Sync labor/shift data from Square Team & Labor APIs.
+ * Requires EMPLOYEES_READ and TIMECARDS_READ permissions.
+ */
+async function syncSquareLabor(locationId) {
+    const location = await client_1.default.location.findUnique({ where: { id: locationId } });
+    if (!location?.squareAccessToken || !location.squareMerchantId) {
+        logger_1.logger.warn('SquareSync', `No access token or merchant ID for location ${locationId}`);
+        return 0;
+    }
+    try {
+        const token = (0, encryption_1.decrypt)(location.squareAccessToken);
+        const baseUrl = process.env.SQUARE_ENVIRONMENT === 'production'
+            ? 'https://connect.squareup.com'
+            : 'https://connect.squareupsandbox.com';
+        // Fetch team members
+        const teamResp = await fetch(`${baseUrl}/v2/team-members/search`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+                'Square-Version': '2024-01-18',
+            },
+            body: JSON.stringify({
+                query: {
+                    filter: {
+                        location_ids: [location.squareMerchantId],
+                        status: 'ACTIVE',
+                    },
+                },
+            }),
+        });
+        const teamData = (await teamResp.json());
+        const members = teamData.team_members ?? [];
+        const memberMap = new Map();
+        for (const m of members) {
+            memberMap.set(m.id, [m.given_name, m.family_name].filter(Boolean).join(' ') || m.id);
+        }
+        // Fetch shifts (last 90 days)
+        const sinceDate = new Date(Date.now() - NINETY_DAYS_MS);
+        const shiftsResp = await fetch(`${baseUrl}/v2/labor/shifts/search`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+                'Square-Version': '2024-01-18',
+            },
+            body: JSON.stringify({
+                query: {
+                    filter: {
+                        location_ids: [location.squareMerchantId],
+                        start: { start_at: sinceDate.toISOString() },
+                    },
+                },
+                limit: 200,
+            }),
+        });
+        const shiftsData = (await shiftsResp.json());
+        const shifts = shiftsData.shifts ?? [];
+        let count = 0;
+        for (const shift of shifts) {
+            if (shift.status === 'OPEN')
+                continue; // skip in-progress shifts
+            const startTime = new Date(shift.start_at);
+            const endTime = new Date(shift.end_at);
+            const totalHours = (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60);
+            const hourlyRate = shift.wage?.hourly_rate?.amount
+                ? shift.wage.hourly_rate.amount / 100
+                : undefined;
+            const empId = shift.team_member_id || shift.employee_id || null;
+            await client_1.default.staffShift.create({
+                data: {
+                    locationId,
+                    employeeId: empId,
+                    employeeName: empId ? memberMap.get(empId) ?? null : null,
+                    role: shift.wage?.title ?? 'staff',
+                    startTime,
+                    endTime,
+                    hourlyRate: hourlyRate ?? null,
+                    totalHours: Math.round(totalHours * 100) / 100,
+                    totalCost: hourlyRate ? Math.round(totalHours * hourlyRate * 100) / 100 : null,
+                    source: 'square',
+                },
+            });
+            count++;
+        }
+        await client_1.default.syncLog.create({
+            data: {
+                locationId,
+                source: 'square_labor',
+                status: 'success',
+                recordsProcessed: count,
+            },
+        });
+        logger_1.logger.info('SquareSync', `Synced ${count} labor shifts for ${locationId}`);
+        return count;
+    }
+    catch (err) {
+        await client_1.default.syncLog.create({
+            data: {
+                locationId,
+                source: 'square_labor',
+                status: 'error',
+                error: err instanceof Error ? err.message : String(err),
+            },
+        });
+        logger_1.logger.error('SquareSync', `Failed to sync labor for ${locationId}`, err);
+        return 0;
+    }
 }
 function startSyncSchedule() {
     if (process.env.DEMO_MODE === 'true') {

@@ -9,5 +9,9 @@ export declare function initialCloverSync(locationId: string): Promise<{
     catalog: number;
     orders: number;
 }>;
+/**
+ * Sync labor/shift data from Clover Employees & Shifts APIs.
+ */
+export declare function syncCloverLabor(locationId: string): Promise<number>;
 export declare function startCloverSyncSchedule(): void;
 //# sourceMappingURL=sync.d.ts.map

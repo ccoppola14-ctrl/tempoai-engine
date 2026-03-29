@@ -1,0 +1,1 @@
+{"version":3,"file":"index.js","sourceRoot":"","sources":["../../../../src/db/demo-brands/index.ts"],"names":[],"mappings":";;;;;AAyBA,wCAEC;AAED,gCAEC;AAZD,gEAA6C;AAE7C,MAAM,aAAa,GAAoC;IACrD,aAAa,EAAE,qBAAgB;CAChC,CAAC;AAEF,SAAgB,cAAc,CAAC,SAAiB;IAC9C,OAAO,aAAa,CAAC,SAAS,CAAC,IAAI,IAAI,CAAC;AAC1C,CAAC;AAED,SAAgB,UAAU;IACxB,OAAO,MAAM,CAAC,IAAI,CAAC,aAAa,CAAC,CAAC;AACpC,CAAC"}

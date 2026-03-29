@@ -9,5 +9,10 @@ export declare function initialSync(locationId: string): Promise<{
     catalog: number;
     orders: number;
 }>;
+/**
+ * Sync labor/shift data from Square Team & Labor APIs.
+ * Requires EMPLOYEES_READ and TIMECARDS_READ permissions.
+ */
+export declare function syncSquareLabor(locationId: string): Promise<number>;
 export declare function startSyncSchedule(): void;
 //# sourceMappingURL=sync.d.ts.map

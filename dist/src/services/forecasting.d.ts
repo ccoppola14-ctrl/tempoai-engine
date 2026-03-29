@@ -18,6 +18,11 @@ interface DayForecast {
             direction: string;
             percentChange: number;
         };
+        event: {
+            name: string;
+            type: string;
+            impact: number;
+        } | null;
     };
     staffing: {
         recommended: number;
