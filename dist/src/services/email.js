@@ -64,6 +64,56 @@ function buildHtml(summary, locationName) {
         <p style="color: #E0E0E0; font-size: 15px; margin: 6px 0 0 0;">${summary.weatherNote}</p>
       </div>`
         : '';
+    // Build promo recommendations HTML
+    const promos = summary.promoRecommendations || [];
+    const promosHtml = promos.length > 0 ? `
+          <tr>
+            <td style="background-color: #141428; padding: 0 32px 24px;">
+              <span style="color: #4ADE80; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; font-weight: 600;">&#127919; Today's Promos</span>
+              ${promos.map((p, i) => `
+              <div style="background: #1A1A2E; border-radius: 10px; padding: 16px 20px; margin-top: ${i === 0 ? '12' : '8'}px; border-left: 3px solid #4ADE80;">
+                <p style="color: #FFFFFF; font-size: 15px; font-weight: 600; margin: 0 0 4px;">${p.itemName} <span style="color: #4ADE80; font-size: 13px;">(+${p.expectedLift.toFixed(0)}% expected)</span></p>
+                <p style="color: #A0A0B8; font-size: 14px; margin: 0;">${p.promoSuggestion}</p>
+              </div>`).join('')}
+            </td>
+          </tr>` : '';
+    // Build upsell tip HTML
+    const upsell = summary.upsellTip;
+    const upsellHtml = upsell ? `
+          <tr>
+            <td style="background-color: #141428; padding: 0 32px 24px;">
+              <div style="background: #1A1A2E; border-radius: 10px; padding: 16px 20px; border-left: 3px solid #F59E0B;">
+                <span style="color: #F59E0B; font-size: 13px; text-transform: uppercase; letter-spacing: 1px;">&#128161; Upsell Tip</span>
+                <p style="color: #FFFFFF; font-size: 15px; font-weight: 600; margin: 8px 0 4px;">When customers order: ${upsell.baseItem}</p>
+                <p style="color: #A0A0B8; font-size: 14px; margin: 0;">Suggest: <span style="color: #F59E0B; font-weight: 600;">${upsell.suggestItem}</span></p>
+                <p style="color: #888; font-size: 13px; margin: 6px 0 0;">${upsell.reason}</p>
+              </div>
+            </td>
+          </tr>` : '';
+    // Build staffing note HTML
+    const staffing = summary.staffingNote;
+    const staffingHtml = staffing ? `
+          <tr>
+            <td style="background-color: #141428; padding: 0 32px 24px;">
+              <div style="background: #1A1A2E; border-radius: 10px; padding: 16px 20px; border-left: 3px solid #8B5CF6;">
+                <span style="color: #8B5CF6; font-size: 13px; text-transform: uppercase; letter-spacing: 1px;">&#128101; Staffing</span>
+                <p style="color: #FFFFFF; font-size: 15px; margin: 8px 0 4px;">${staffing.message}</p>
+                <p style="color: #A0A0B8; font-size: 14px; margin: 0;">&#10145; ${staffing.action}</p>
+              </div>
+            </td>
+          </tr>` : '';
+    // Build underperformers HTML
+    const underperformers = summary.underperformers || [];
+    const underperformersHtml = underperformers.length > 0 ? `
+          <tr>
+            <td style="background-color: #141428; padding: 0 32px 24px;">
+              <span style="color: #F87171; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; font-weight: 600;">&#9888; Menu Watch</span>
+              ${underperformers.map(u => `
+              <div style="background: #1A1A2E; border-radius: 10px; padding: 12px 20px; margin-top: 8px; border-left: 3px solid #F87171;">
+                <p style="color: #FFFFFF; font-size: 15px; margin: 0;"><span style="color: #F87171; font-weight: 600;">${u.name}</span> — sold ${u.soldYesterday} yesterday vs. ${u.avgSold} daily avg</p>
+              </div>`).join('')}
+            </td>
+          </tr>` : '';
     return `
 <!DOCTYPE html>
 <html>
@@ -145,6 +195,19 @@ function buildHtml(summary, locationName) {
               ${weatherHtml}
             </td>
           </tr>` : ''}
+
+
+          <!-- Today's Promos -->
+          ${promosHtml}
+
+          <!-- Upsell Tip -->
+          ${upsellHtml}
+
+          <!-- Staffing Note -->
+          ${staffingHtml}
+
+          <!-- Underperformers -->
+          ${underperformersHtml}
 
           <!-- CTA Button -->
           <tr>
@@ -445,6 +508,36 @@ function buildMockSummary() {
         topRecommendation: 'PROMOTE: Truffle Burger — strong lunch performer on clear days (expected +23%)',
         beforeAfterSnippet: 'Since TempoAi (45d): avg daily revenue up 12.3% ($3,200 -> $3,594)',
         upcomingEvents: null,
+        promoRecommendations: [
+            {
+                itemName: 'Truffle Burger',
+                message: 'Strong lunch performer on clear days',
+                expectedLift: 23,
+                triggerType: 'weather',
+                triggerCondition: 'clear',
+                promoSuggestion: 'Good weather play: Pair Truffle Burger with a cold drink combo',
+            },
+            {
+                itemName: 'Margherita Pizza',
+                message: 'Trending up this week across all dayparts',
+                expectedLift: 15,
+                triggerType: 'trend',
+                triggerCondition: 'trending_up',
+                promoSuggestion: 'Margherita Pizza is trending up \u2014 ride the momentum with extra visibility',
+            },
+        ],
+        upsellTip: {
+            baseItem: 'Truffle Burger',
+            suggestItem: 'Sweet Potato Fries',
+            reason: 'Suggest "Sweet Potato Fries" ($5.99) with every "Truffle Burger" order \u2014 easy ticket bump',
+        },
+        staffingNote: {
+            message: 'Beautiful weather \u2014 expect higher than normal foot traffic',
+            action: 'Make sure you\'re fully staffed through the afternoon. Patio/outdoor seating will be busy',
+        },
+        underperformers: [
+            { name: 'Veggie Wrap', soldYesterday: 3, avgSold: 18 },
+        ],
     };
 }
 //# sourceMappingURL=email.js.map

@@ -48,6 +48,17 @@ function formatSMS(summary, forecastSales, forecastNote) {
             // Only add if not redundant with forecast note
         }
     }
+    // Today's top promo recommendation
+    const promos = summary.promoRecommendations || [];
+    if (promos.length > 0) {
+        const top = promos[0];
+        parts.push(`Today: Push ${top.itemName} (+${top.expectedLift.toFixed(0)}%)`);
+    }
+    // Staffing note (short)
+    const staffing = summary.staffingNote;
+    if (staffing && !staffing.message.includes('Normal conditions') && !staffing.message.includes('Standard staffing')) {
+        parts.push(staffing.message.split(' — ')[0]);
+    }
     parts.push('-TempoAi');
     let sms = parts.join('. ');
     // Truncate to 300 chars if needed
