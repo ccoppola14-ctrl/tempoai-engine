@@ -26,6 +26,10 @@ model User {
   verificationToken String?
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
+  phone             String?
+  digestEmail       Boolean       @default(true)
+  digestSms         Boolean       @default(false)
+  digestHour        Int           @default(6)
   assignedLocations UserLocation[]
 }
 

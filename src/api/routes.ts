@@ -25,6 +25,7 @@ import { getReviews, generateDraftResponse } from '../services/reviews';
 import { sendDailySummary, buildMockSummary } from '../services/email';
 import { getBeforeAfterRevenue, getAttribution } from '../services/analytics';
 import { generateNotification } from '../services/notifications';
+import digestRouter from './digest';
 import { getUpcomingEvents, EVENT_TYPE_RANGES } from '../integrations/events';
 import { analyzeLaborEfficiency, generateStaffingRecommendation, generateWeeklyLaborPlan, calculateLaborWaste, seedDefaultLaborTargets } from '../services/labor';
 import { syncSquareLabor } from '../integrations/square/sync';
@@ -34,6 +35,7 @@ const router = Router();
 
 // ─── Billing ──────────────────────────────────────────────
 router.use('/billing', billingRouter);
+router.use('/digest', digestRouter);
 
 // ─── Auth ────────────────────────────────────────────────
 router.use('/auth', authRouter);

@@ -30,6 +30,7 @@ const reviews_1 = require("../services/reviews");
 const email_1 = require("../services/email");
 const analytics_1 = require("../services/analytics");
 const notifications_1 = require("../services/notifications");
+const digest_1 = __importDefault(require("./digest"));
 const events_1 = require("../integrations/events");
 const labor_1 = require("../services/labor");
 const sync_3 = require("../integrations/square/sync");
@@ -37,6 +38,7 @@ const sync_4 = require("../integrations/clover/sync");
 const router = (0, express_1.Router)();
 // ─── Billing ──────────────────────────────────────────────
 router.use('/billing', billing_1.default);
+router.use('/digest', digest_1.default);
 // ─── Auth ────────────────────────────────────────────────
 router.use('/auth', auth_1.default);
 // Alias: /api/signup → /api/auth/signup (for get-started form)
