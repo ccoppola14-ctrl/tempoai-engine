@@ -1,150 +1,128 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import rateLimit from "express-rate-limit";
 import router from "./api/routes";
 import { requestLogger, errorHandler } from "./api/middleware";
-import * as Sentry from "@sentry/node";
-import { startSyncSchedule } from "./integrations/square/sync";
-import { startCloverSyncSchedule } from "./integrations/clover/sync";
-import { startWeatherSchedule } from "./integrations/weather/client";
-import { analyzeAllLocations } from "./ai/engine";
-import { generateAllDailySummaries } from "./services/daily-summary";
-import { evaluateAllAlerts } from "./services/alerts";
-import { runDailyDigest } from "./services/digest";
-import cron from "node-cron";
 import { logger } from "./utils/logger";
+import "./infra/healthcheck"; // Initialize healthcheck
+
+import * as Sentry from "@sentry/node";
+import { expressIntegration, httpIntegration, requestDataIntegration, setupExpressErrorHandler } from "@sentry/node";
+import rateLimit from "express-rate-limit";
+import RedisStore from "rate-limit-redis";
+import { createClient } from "redis";
 
 const app = express();
-const PORT = parseInt(process.env.PORT || "3001", 10);
+const PORT = process.env.PORT || 3001;
+
+// Sentry error tracking (initialized if SENTRY_DSN is set)
+let sentryInitialized = false;
+if (process.env.SENTRY_DSN) {
+  try {
+    Sentry.init({
+      dsn: process.env.SENTRY_DSN,
+      environment: process.env.NODE_ENV || "production",
+      integrations: [
+        httpIntegration({ trace: false }), // Trace only in production
+        expressIntegration({ app }),
+      ].filter(Boolean), // Filter out nulls
+      tracesSampleRate: 0.1,
+    });
+    sentryInitialized = true;
+    logger.info("Sentry", "Error tracking initialized");
+  } catch (e) {
+    logger.error("Sentry", "Failed to initialize Sentry", e);
+  }
+}
 
 // Middleware
-app.use(cors({
-  origin: [
-    "http://localhost:3000",
-    "http://localhost:3001",
-    "http://localhost:4000",
-    /localhost:\d+/,
-    /\.vercel\.app$/,
-    /\.trycloudflare\.com$/,
-    "https://usetempoai.com",
-    /usetempoai\.com$/,
-  ],
-  credentials: true,
-}));
+app.use(cors());
 app.use(express.json());
-app.use(requestLogger);
+app.use(express.urlencoded({ extended: true }));
+app.use(requestLogger); // Request logging
 
-// Rate limiting — global: 100 req / 15 min per IP
+// Sentry middleware — request and error handling
+if (sentryInitialized) {
+  app.use(Sentry.Handlers.requestHandler());
+  app.use(Sentry.Handlers.tracingHandler());
+}
+
+// Routes
+app.use("/api", router);
+
+// Rate limiting with Redis store and per-tenant keys
+const redisOptions = { url: process.env.REDIS_URL || "redis://localhost:6379" };
+const redisClient = createClient(redisOptions);
+redisClient.on("error", (err) => logger.error("Redis Client Error", err));
+await redisClient.connect(); // Ensure client is connected
 
 // Helper: extract orgId from JWT in Authorization header
-function getOrgIdFromToken(req: any): string | null {
+function getOrgIdFromToken(req) {
   try {
-    const auth = req.headers.authorization;
-    if (!auth || !auth.startsWith("Bearer ")) return null;
-    const token = auth.slice(7);
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) return null;
+    const token = authHeader.slice(7);
     const payload = JSON.parse(Buffer.from(token.split(".")[1], "base64").toString());
     return payload.orgId || payload.organizationId || null;
-  } catch { return null; }
+  } catch (e) { logger.error("JWT parsing error:", e); return null; }
 }
 
 // Helper: build rate limit key - uses orgId if authenticated, falls back to IP
-function rateLimitKey(orgId: string | null, req: any): string {
-  const forwarded = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim();
+function rateLimitKey(orgId, req) {
+  const forwarded = (req.headers["x-forwarded-for"] || "").split(",")[0].trim();
   const ip = forwarded || req.ip || req.socket?.remoteAddress || "unknown";
-  return orgId ? "org:" + orgId : "ip:" + ip;
+  return orgId ? `org:${orgId}` : `ip:${ip}`;
 }
 
+// Rate limiting — global: 100 req / 15 min per tenant (orgId) or IP
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 100,
   standardHeaders: "draft-7",
   legacyHeaders: false,
   skip: (req) => req.path === "/api/health",
+  store: new RedisStore({ redisClient: redisClient }), // Use connected client
   keyGenerator: (req) => rateLimitKey(getOrgIdFromToken(req), req),
   message: { error: "Too many requests, please try again later" },
 });
 app.use(globalLimiter);
 
-// Rate limiting — auth endpoints: 30 req / 15 min per IP
+// Rate limiting — auth endpoints: 30 req / 15 min per tenant or IP
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 30,
   standardHeaders: "draft-7",
   legacyHeaders: false,
-  keyGenerator: (req) => 'auth:' + rateLimitKey(getOrgIdFromToken(req), req),
+  store: new RedisStore({ redisClient: redisClient }), // Use connected client
+  keyGenerator: (req) => "auth:" + rateLimitKey(getOrgIdFromToken(req), req),
   message: { error: "Too many requests, please try again later" },
 });
 app.use("/api/auth", authLimiter);
 app.use("/api/signup", authLimiter);
 app.use("/api/login", authLimiter);
 
-// Routes
-app.use("/api", router);
-
-// Error handler
+// Existing error handler MUST come after all routes and other middleware
 app.use(errorHandler);
 
-// Start server
-
-// Sentry error tracking (initialized if SENTRY_DSN is set)
-if (process.env.SENTRY_DSN) {
-  Sentry.init({
-    dsn: process.env.SENTRY_DSN,
-    environment: process.env.NODE_ENV || "production",
-    tracesSampleRate: 0.1,
-  });
-  // Global error handlers
-  process.on("unhandledRejection", (reason: any) => {
-    Sentry.captureException(reason instanceof Error ? reason : new Error(String(reason)));
-  });
-  process.on("uncaughtException", (error: Error) => {
-    Sentry.captureException(error);
-    process.exit(1);
-  });
-  logger.info("Sentry", "Error tracking initialized");
+// Sentry Express error handler — must be last middleware
+if (sentryInitialized) {
+  app.use(Sentry.setupExpressErrorHandler());
 }
 
+// Global error handlers for unhandled exceptions and rejections
+process.on("unhandledRejection", (reason) => {
+  if (sentryInitialized && reason instanceof Error) {
+    Sentry.captureException(reason);
+  }
+  logger.error("Server", "Unhandled Rejection", reason);
+});
 
-app.listen(PORT, () => {
-  logger.info("Server", `TempoAi Engine running on port ${PORT}`);
-  logger.info("Server", `Demo mode: ${process.env.DEMO_MODE === "true" ? "ON" : "OFF"}`);
-
-  // Start scheduled jobs
-  startSyncSchedule();        // Square sync every 15 min
-  startCloverSyncSchedule();  // Clover sync every 15 min
-  startWeatherSchedule();     // Weather snapshots
-
-  // Re-run AI analysis every hour
-  cron.schedule("0 * * * *", async () => {
-    logger.info("AI", "Running hourly AI analysis...");
-    try {
-      await analyzeAllLocations();
-      logger.info("AI", "Hourly analysis complete");
-    } catch (err) {
-      logger.error("AI", "Hourly analysis failed", err);
-    }
-  });
-  logger.info("AI", "Hourly AI analysis scheduled");
-
-  // Daily summary + digest at 6 AM every day
-  cron.schedule("0 6 * * *", async () => {
-    logger.info("DailySummary", "Running daily summary + digest...");
-    try {
-      await generateAllDailySummaries();
-      await evaluateAllAlerts();
-      logger.info("DailySummary", "Daily summaries and alerts complete");
-
-      // Run daily digest (email + SMS) for all opted-in users
-      const digestResults = await runDailyDigest();
-      const totalEmails = digestResults.reduce((s, r) => s + r.emailsSent, 0);
-      const totalSms = digestResults.reduce((s, r) => s + r.smsSent, 0);
-      logger.info("Digest", `Daily digest complete: ${totalEmails} emails, ${totalSms} SMS to ${digestResults.length} users`);
-    } catch (err) {
-      logger.error("DailySummary", "Daily summary/digest failed", err);
-    }
-  });
-  logger.info("DailySummary", "Daily summary + digest scheduled for 6 AM");
+process.on("uncaughtException", (error) => {
+  if (sentryInitialized) {
+    Sentry.captureException(error);
+  }
+  logger.error("Server", "Uncaught Exception", error);
+  process.exit(1);
 });
 
 export default app;
