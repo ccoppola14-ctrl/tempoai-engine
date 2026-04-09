@@ -4,6 +4,7 @@ import cors from "cors";
 import rateLimit from "express-rate-limit";
 import router from "./api/routes";
 import { requestLogger, errorHandler } from "./api/middleware";
+import * as Sentry from "@sentry/node";
 import { startSyncSchedule } from "./integrations/square/sync";
 import { startCloverSyncSchedule } from "./integrations/clover/sync";
 import { startWeatherSchedule } from "./integrations/weather/client";
@@ -64,6 +65,26 @@ app.use("/api", router);
 app.use(errorHandler);
 
 // Start server
+
+// Sentry error tracking (initialized if SENTRY_DSN is set)
+if (process.env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    environment: process.env.NODE_ENV || "production",
+    tracesSampleRate: 0.1,
+  });
+  // Global error handlers
+  process.on("unhandledRejection", (reason: any) => {
+    Sentry.captureException(reason instanceof Error ? reason : new Error(String(reason)));
+  });
+  process.on("uncaughtException", (error: Error) => {
+    Sentry.captureException(error);
+    process.exit(1);
+  });
+  logger.info("Sentry", "Error tracking initialized");
+}
+
+
 app.listen(PORT, () => {
   logger.info("Server", `TempoAi Engine running on port ${PORT}`);
   logger.info("Server", `Demo mode: ${process.env.DEMO_MODE === "true" ? "ON" : "OFF"}`);
