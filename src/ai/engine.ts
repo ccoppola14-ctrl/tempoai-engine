@@ -91,7 +91,14 @@ export async function analyzeLocation(locationId: string): Promise<{
  * Run analysis for all locations
  */
 export async function analyzeAllLocations(): Promise<void> {
-  const locations = await prisma.location.findMany();
+  const locations = await prisma.location.findMany({
+    where: {
+      OR: [
+        { squareMerchantId: { not: null } },
+        { cloverMerchantId: { not: null } },
+      ],
+    },
+  });
 
   for (const location of locations) {
     try {
