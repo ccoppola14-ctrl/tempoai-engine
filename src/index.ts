@@ -36,12 +36,32 @@ app.use(express.json());
 app.use(requestLogger);
 
 // Rate limiting — global: 100 req / 15 min per IP
+
+// Helper: extract orgId from JWT in Authorization header
+function getOrgIdFromToken(req: any): string | null {
+  try {
+    const auth = req.headers.authorization;
+    if (!auth || !auth.startsWith("Bearer ")) return null;
+    const token = auth.slice(7);
+    const payload = JSON.parse(Buffer.from(token.split(".")[1], "base64").toString());
+    return payload.orgId || payload.organizationId || null;
+  } catch { return null; }
+}
+
+// Helper: build rate limit key - uses orgId if authenticated, falls back to IP
+function rateLimitKey(orgId: string | null, req: any): string {
+  const forwarded = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim();
+  const ip = forwarded || req.ip || req.socket?.remoteAddress || "unknown";
+  return orgId ? "org:" + orgId : "ip:" + ip;
+}
+
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 100,
   standardHeaders: "draft-7",
   legacyHeaders: false,
   skip: (req) => req.path === "/api/health",
+  keyGenerator: (req) => rateLimitKey(getOrgIdFromToken(req), req),
   message: { error: "Too many requests, please try again later" },
 });
 app.use(globalLimiter);
@@ -52,6 +72,7 @@ const authLimiter = rateLimit({
   limit: 30,
   standardHeaders: "draft-7",
   legacyHeaders: false,
+  keyGenerator: (req) => 'auth:' + rateLimitKey(getOrgIdFromToken(req), req),
   message: { error: "Too many requests, please try again later" },
 });
 app.use("/api/auth", authLimiter);

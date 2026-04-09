@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -9,6 +42,7 @@ const cors_1 = __importDefault(require("cors"));
 const express_rate_limit_1 = __importDefault(require("express-rate-limit"));
 const routes_1 = __importDefault(require("./api/routes"));
 const middleware_1 = require("./api/middleware");
+const Sentry = __importStar(require("@sentry/node"));
 const sync_1 = require("./integrations/square/sync");
 const sync_2 = require("./integrations/clover/sync");
 const client_1 = require("./integrations/weather/client");
@@ -37,12 +71,33 @@ app.use((0, cors_1.default)({
 app.use(express_1.default.json());
 app.use(middleware_1.requestLogger);
 // Rate limiting — global: 100 req / 15 min per IP
+// Helper: extract orgId from JWT in Authorization header
+function getOrgIdFromToken(req) {
+    try {
+        const auth = req.headers.authorization;
+        if (!auth || !auth.startsWith("Bearer "))
+            return null;
+        const token = auth.slice(7);
+        const payload = JSON.parse(Buffer.from(token.split(".")[1], "base64").toString());
+        return payload.orgId || payload.organizationId || null;
+    }
+    catch {
+        return null;
+    }
+}
+// Helper: build rate limit key - uses orgId if authenticated, falls back to IP
+function rateLimitKey(orgId, req) {
+    const forwarded = req.headers["x-forwarded-for"]?.split(",")[0]?.trim();
+    const ip = forwarded || req.ip || req.socket?.remoteAddress || "unknown";
+    return orgId ? "org:" + orgId : "ip:" + ip;
+}
 const globalLimiter = (0, express_rate_limit_1.default)({
     windowMs: 15 * 60 * 1000,
     limit: 100,
     standardHeaders: "draft-7",
     legacyHeaders: false,
     skip: (req) => req.path === "/api/health",
+    keyGenerator: (req) => rateLimitKey(getOrgIdFromToken(req), req),
     message: { error: "Too many requests, please try again later" },
 });
 app.use(globalLimiter);
@@ -52,6 +107,7 @@ const authLimiter = (0, express_rate_limit_1.default)({
     limit: 30,
     standardHeaders: "draft-7",
     legacyHeaders: false,
+    keyGenerator: (req) => 'auth:' + rateLimitKey(getOrgIdFromToken(req), req),
     message: { error: "Too many requests, please try again later" },
 });
 app.use("/api/auth", authLimiter);
@@ -62,6 +118,23 @@ app.use("/api", routes_1.default);
 // Error handler
 app.use(middleware_1.errorHandler);
 // Start server
+// Sentry error tracking (initialized if SENTRY_DSN is set)
+if (process.env.SENTRY_DSN) {
+    Sentry.init({
+        dsn: process.env.SENTRY_DSN,
+        environment: process.env.NODE_ENV || "production",
+        tracesSampleRate: 0.1,
+    });
+    // Global error handlers
+    process.on("unhandledRejection", (reason) => {
+        Sentry.captureException(reason instanceof Error ? reason : new Error(String(reason)));
+    });
+    process.on("uncaughtException", (error) => {
+        Sentry.captureException(error);
+        process.exit(1);
+    });
+    logger_1.logger.info("Sentry", "Error tracking initialized");
+}
 app.listen(PORT, () => {
     logger_1.logger.info("Server", `TempoAi Engine running on port ${PORT}`);
     logger_1.logger.info("Server", `Demo mode: ${process.env.DEMO_MODE === "true" ? "ON" : "OFF"}`);

@@ -64,7 +64,14 @@ async function analyzeLocation(locationId) {
  * Run analysis for all locations
  */
 async function analyzeAllLocations() {
-    const locations = await client_1.default.location.findMany();
+    const locations = await client_1.default.location.findMany({
+        where: {
+            OR: [
+                { squareMerchantId: { not: null } },
+                { cloverMerchantId: { not: null } },
+            ],
+        },
+    });
     for (const location of locations) {
         try {
             await analyzeLocation(location.id);
