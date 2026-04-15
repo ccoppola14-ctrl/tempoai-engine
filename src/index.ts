@@ -35,8 +35,30 @@ if (process.env.SENTRY_DSN) {
   }
 }
 
-// Middleware
-app.use(cors());
+// CORS - restrict to production domains
+const allowedOrigins = [
+  'https://usetempoai.com',
+  'https://www.usetempoai.com',
+  'https://tempoai-three.vercel.app',
+];
+
+// Allow localhost in development
+if (process.env.NODE_ENV !== 'production') {
+  allowedOrigins.push('http://localhost:3000');
+  allowedOrigins.push('http://localhost:3001');
+}
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      logger.warn('CORS', `Blocked request from: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(requestLogger); // Request logging
@@ -124,5 +146,53 @@ process.on("uncaughtException", (error) => {
   logger.error("Server", "Uncaught Exception", error);
   process.exit(1);
 });
+
+// Startup verification
+function verifyProductionEnvironment() {
+  const requiredEnvVars = [
+    'DATABASE_URL',
+    'JWT_SECRET',
+    'ENCRYPTION_KEY',
+    'RESEND_API_KEY',
+    'SQUARE_APP_ID',
+    'SQUARE_APP_SECRET',
+    'STRIPE_SECRET_KEY',
+    'STRIPE_WEBHOOK_SECRET',
+    'STRIPE_STARTER_PRICE_ID',
+    'STRIPE_GROWTH_PRICE_ID',
+    'STRIPE_PRO_PRICE_ID',
+  ];
+  
+  const missing = requiredEnvVars.filter(v => !process.env[v]);
+  
+  if (missing.length > 0) {
+    logger.error('Startup', `Missing required env vars: ${missing.join(', ')}`);
+    throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
+  }
+  
+  logger.info('Startup', 'All required environment variables verified');
+}
+
+// Verify build artifacts exist
+function verifyBuildArtifacts() {
+  const fs = require('fs');
+  const path = require('path');
+  const buildPath = path.join(__dirname, 'index.js');
+  
+  if (!fs.existsSync(buildPath)) {
+    throw new Error('Build artifacts not found. Run npm run build before starting.');
+  }
+  
+  const stats = fs.statSync(buildPath);
+  if (Date.now() - stats.mtime.getTime() > 7 * 24 * 60 * 60 * 1000) {
+    logger.warn('Startup', 'Build artifacts are older than 7 days');
+  }
+  
+  logger.info('Startup', `Build artifacts verified (modified: ${stats.mtime.toISOString()})`);
+}
+
+// Run verifications on startup
+verifyProductionEnvironment();
+verifyBuildArtifacts();
 
 export default app;

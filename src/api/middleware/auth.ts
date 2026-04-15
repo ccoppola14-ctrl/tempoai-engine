@@ -2,7 +2,11 @@ import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import prisma from '../../db/client';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'tempoai-dev-secret';
+const JWT_SECRET = process.env.JWT_SECRET;
+
+if (!JWT_SECRET || JWT_SECRET === 'tempoai-dev-secret') {
+  throw new Error('JWT_SECRET environment variable is required and must not be the default value');
+}
 
 export interface AuthUser {
   id: string;

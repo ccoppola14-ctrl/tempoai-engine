@@ -16,13 +16,12 @@ function getKey(): Buffer | null {
 /**
  * Encrypt a plaintext string using AES-256-GCM.
  * Returns format: iv:authTag:ciphertext (all hex-encoded).
- * If ENCRYPTION_KEY is not set, returns plaintext as-is with a warning.
+ * Throws if ENCRYPTION_KEY is not set.
  */
 export function encrypt(plaintext: string): string {
   const key = getKey();
   if (!key) {
-    logger.warn('Encryption', 'ENCRYPTION_KEY not set — storing token in plaintext');
-    return plaintext;
+    throw new Error('ENCRYPTION_KEY environment variable is required for token encryption');
   }
 
   const iv = crypto.randomBytes(IV_LENGTH);
