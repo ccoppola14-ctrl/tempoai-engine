@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 
-// SQLite doesn't require an adapter - Prisma connects directly
-const prisma = new PrismaClient();
+// SQLite with Prisma 7.5 - config loaded from prisma.config.ts
+const prisma = new PrismaClient({});
 
 export default prisma;
