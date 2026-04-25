@@ -6,6 +6,7 @@ export default defineConfig({
   migrations: {
     path: './prisma/migrations',
   },
+  // PostgreSQL - adapter configured in src/db/client.ts
   datasource: {
     url: env('DATABASE_URL'),
   },
