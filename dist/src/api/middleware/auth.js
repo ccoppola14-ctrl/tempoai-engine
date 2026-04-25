@@ -11,7 +11,10 @@ exports.getUserLocationIds = getUserLocationIds;
 exports.canAccessLocation = canAccessLocation;
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const client_1 = __importDefault(require("../../db/client"));
-const JWT_SECRET = process.env.JWT_SECRET || 'tempoai-dev-secret';
+const JWT_SECRET = process.env.JWT_SECRET || '';
+if (!JWT_SECRET || JWT_SECRET === 'tempoai-dev-secret') {
+    throw new Error('JWT_SECRET environment variable is required and must not be the default value');
+}
 /**
  * Required auth — rejects 401 if no valid JWT.
  */
@@ -28,7 +31,7 @@ function authMiddleware(req, res, next) {
             id: payload.id,
             email: payload.email,
             role: payload.role,
-            organizationId: payload.organizationId,
+            organizationId: payload.organizationId ?? null,
         };
         next();
     }

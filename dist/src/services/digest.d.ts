@@ -1,4 +1,4 @@
-import { type SummaryData } from "./daily-summary";
+import type { SummaryData } from "./daily-summary";
 export interface DigestResult {
     userId: string;
     userName: string;
@@ -11,16 +11,16 @@ export interface DigestResult {
     smsFailed: number;
 }
 /**
- * Run daily digest for all users who are opted in.
- * For each user, generate summary for each of their accessible locations
- * and send via their preferred channels (email/SMS).
+ * DISABLED: Digest service requires schema migration for:
+ * - digestEmail, digestSms, digestHour fields on User model
+ * - phone field on User model
+ * - assignedLocations relation on User model
+ *
+ * Run the following Prisma migration to enable:
+ * npx prisma migrate dev --name add_digest_preferences
  */
 export declare function runDailyDigest(): Promise<DigestResult[]>;
-/**
- * Send a test digest to a specific email/phone for a given location.
- * Useful for demos and verifying the flow works.
- */
-export declare function sendTestDigest(locationId: string, options: {
+export declare function sendTestDigest(_locationId: string, _options: {
     email?: string;
     phone?: string;
 }): Promise<{

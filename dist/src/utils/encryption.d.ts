@@ -1,7 +1,7 @@
 /**
  * Encrypt a plaintext string using AES-256-GCM.
  * Returns format: iv:authTag:ciphertext (all hex-encoded).
- * If ENCRYPTION_KEY is not set, returns plaintext as-is with a warning.
+ * Throws if ENCRYPTION_KEY is not set.
  */
 export declare function encrypt(plaintext: string): string;
 /**

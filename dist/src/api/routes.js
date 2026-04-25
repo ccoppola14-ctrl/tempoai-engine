@@ -251,7 +251,13 @@ router.get('/square/oauth/callback', async (req, res) => {
     }
 });
 // GET /square/merchants — list connected Square merchants
-router.get('/square/merchants', async (_req, res) => {
+router.get('/square/merchants', auth_2.authMiddleware, async (req, res) => {
+    const user = req.user;
+    // Only ADMIN can see all merchants
+    if (user.role !== 'ADMIN') {
+        res.status(403).json({ error: 'Admin access required' });
+        return;
+    }
     const merchants = await client_1.default.squareMerchant.findMany({
         orderBy: { installedAt: 'desc' },
     });
@@ -270,8 +276,10 @@ router.get('/square/merchants', async (_req, res) => {
     });
 });
 // GET /square/merchants/:merchantId/status — merchant connection status
-router.get('/square/merchants/:merchantId/status', async (req, res) => {
+router.get('/square/merchants/:merchantId/status', auth_2.authMiddleware, async (req, res) => {
+    const user = req.user;
     const merchantId = paramStr(req.params.merchantId);
+    // Get the merchant
     const merchant = await client_1.default.squareMerchant.findUnique({
         where: { merchantId },
     });
@@ -286,6 +294,14 @@ router.get('/square/merchants/:merchantId/status', async (req, res) => {
             _count: { select: { orders: true, menuItems: true, recommendations: true, weatherSnapshots: true } },
         },
     });
+    // If not ADMIN, verify user has access to at least one of these locations
+    if (user.role !== 'ADMIN') {
+        const hasAccess = await Promise.all(locations.map(l => (0, auth_2.canAccessLocation)(user, l.id)));
+        if (!hasAccess.some(Boolean)) {
+            res.status(403).json({ error: 'Access denied to this merchant' });
+            return;
+        }
+    }
     // Get latest sync logs
     const recentSyncs = locations.length > 0
         ? await client_1.default.syncLog.findMany({
@@ -509,8 +525,23 @@ router.get('/recommendations/:locationId', auth_2.optionalAuth, async (req, res)
     });
     res.json(recommendations);
 });
-router.post('/recommendations/:id/apply', async (req, res) => {
+router.post('/recommendations/:id/apply', auth_2.authMiddleware, async (req, res) => {
+    const user = req.user;
     const id = paramStr(req.params.id);
+    // Get the recommendation to find its location
+    const rec = await client_1.default.recommendation.findUnique({
+        where: { id },
+        include: { location: true },
+    });
+    if (!rec) {
+        res.status(404).json({ error: 'Recommendation not found' });
+        return;
+    }
+    // Verify user has access to this location
+    if (!(await (0, auth_2.canAccessLocation)(user, rec.locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+    }
     const recommendation = await client_1.default.recommendation.update({
         where: { id },
         data: { status: 'applied', appliedAt: new Date() },
@@ -654,8 +685,31 @@ router.get('/active-promos/:locationId', auth_2.optionalAuth, async (req, res) =
     }
 });
 // ─── Insights ─────────────────────────────────────────────
-router.get('/insights', async (_req, res) => {
+router.get('/insights', auth_2.authMiddleware, async (req, res) => {
+    const user = req.user;
+    // Build location filter based on user role
+    let locationIds;
+    if (user.role === 'ADMIN') {
+        // ADMIN: no filter - can see all
+    }
+    else if (user.role === 'MANAGER') {
+        locationIds = await (0, auth_2.getUserLocationIds)(user.id);
+    }
+    else if (user.organizationId) {
+        // OWNER: get all locations in their org
+        const orgLocations = await client_1.default.location.findMany({
+            where: { organizationId: user.organizationId },
+            select: { id: true },
+        });
+        locationIds = orgLocations.map(l => l.id);
+    }
+    else {
+        res.status(403).json({ error: 'No organization access' });
+        return;
+    }
+    const where = locationIds ? { locationId: { in: locationIds } } : {};
     const patterns = await client_1.default.aIPattern.findMany({
+        where,
         include: { menuItem: true, location: true },
         orderBy: { liftPercent: 'desc' },
     });
@@ -672,10 +726,25 @@ router.get('/insights', async (_req, res) => {
     });
 });
 // ─── Analytics ────────────────────────────────────────────
-router.get('/analytics/revenue', async (req, res) => {
+router.get('/analytics/revenue', auth_2.authMiddleware, async (req, res) => {
+    const user = req.user;
     const locationId = req.query.locationId;
     const days = parseInt(req.query.days) || 30;
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    // If specific location requested, verify access
+    if (locationId) {
+        if (!(await (0, auth_2.canAccessLocation)(user, locationId))) {
+            res.status(403).json({ error: 'Access denied to this location' });
+            return;
+        }
+    }
+    else {
+        // No location specified - must be ADMIN to see all
+        if (user.role !== 'ADMIN') {
+            res.status(403).json({ error: 'Admin access required to view all locations' });
+            return;
+        }
+    }
     const where = {
         timestamp: { gte: since },
         ...(locationId && { locationId }),
@@ -708,10 +777,25 @@ router.get('/analytics/revenue', async (req, res) => {
         daily: data,
     });
 });
-router.get('/analytics/items', async (req, res) => {
+router.get('/analytics/items', auth_2.authMiddleware, async (req, res) => {
+    const user = req.user;
     const locationId = req.query.locationId;
     const days = parseInt(req.query.days) || 30;
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    // If specific location requested, verify access
+    if (locationId) {
+        if (!(await (0, auth_2.canAccessLocation)(user, locationId))) {
+            res.status(403).json({ error: 'Access denied to this location' });
+            return;
+        }
+    }
+    else {
+        // No location specified - must be ADMIN to see all
+        if (user.role !== 'ADMIN') {
+            res.status(403).json({ error: 'Admin access required to view all locations' });
+            return;
+        }
+    }
     const orderItems = await client_1.default.orderItem.findMany({
         where: {
             order: {
@@ -744,10 +828,16 @@ router.get('/analytics/items', async (req, res) => {
     res.json({ period: { days }, items });
 });
 // ─── Sync ─────────────────────────────────────────────────
-router.post('/sync/trigger', async (req, res) => {
+router.post('/sync/trigger', auth_2.authMiddleware, async (req, res) => {
+    const user = req.user;
     const { locationId } = req.body;
     try {
         if (locationId) {
+            // Verify user has access to this location
+            if (!(await (0, auth_2.canAccessLocation)(user, locationId))) {
+                res.status(403).json({ error: 'Access denied to this location' });
+                return;
+            }
             const catalogCount = await (0, sync_1.syncLocationCatalog)(locationId);
             const orderCount = await (0, sync_1.syncLocationOrders)(locationId);
             const analysis = await (0, engine_1.analyzeLocation)(locationId);
@@ -759,6 +849,11 @@ router.post('/sync/trigger', async (req, res) => {
             });
         }
         else {
+            // No location specified - only ADMIN can sync all
+            if (user.role !== 'ADMIN') {
+                res.status(403).json({ error: 'Admin access required to sync all locations' });
+                return;
+            }
             await (0, sync_1.syncAllLocations)();
             await (0, engine_1.analyzeAllLocations)();
             res.json({ success: true, message: 'All locations synced and analyzed' });
@@ -770,14 +865,25 @@ router.post('/sync/trigger', async (req, res) => {
     }
 });
 // ─── AI Analysis trigger ──────────────────────────────────
-router.post('/analyze', async (req, res) => {
+router.post('/analyze', auth_2.authMiddleware, async (req, res) => {
+    const user = req.user;
     const { locationId } = req.body;
     try {
         if (locationId) {
+            // Verify user has access to this location
+            if (!(await (0, auth_2.canAccessLocation)(user, locationId))) {
+                res.status(403).json({ error: 'Access denied to this location' });
+                return;
+            }
             const result = await (0, engine_1.analyzeLocation)(locationId);
             res.json({ success: true, ...result });
         }
         else {
+            // No location specified - only ADMIN can analyze all
+            if (user.role !== 'ADMIN') {
+                res.status(403).json({ error: 'Admin access required to analyze all locations' });
+                return;
+            }
             await (0, engine_1.analyzeAllLocations)();
             res.json({ success: true, message: 'All locations analyzed' });
         }
@@ -788,7 +894,8 @@ router.post('/analyze', async (req, res) => {
     }
 });
 // ─── Square Onboarding ───────────────────────────────────
-router.post('/onboard/square', async (req, res) => {
+router.post('/onboard/square', auth_2.authMiddleware, async (req, res) => {
+    const user = req.user;
     const { accessToken, locationId } = req.body;
     if (!accessToken || !locationId) {
         res.status(400).json({ error: 'accessToken and locationId are required' });
@@ -802,7 +909,7 @@ router.post('/onboard/square', async (req, res) => {
             res.status(404).json({ error: `Location ${locationId} not found in Square account` });
             return;
         }
-        // Find or create organization scoped to THIS merchant (Fix 2)
+        // Find or create organization scoped to THIS merchant
         let location = await client_1.default.location.findFirst({
             where: { squareMerchantId: locationId },
         });
@@ -1003,9 +1110,26 @@ router.post('/onboard/clover', async (req, res) => {
     }
 });
 // ─── Clover Status ───────────────────────────────────────
-router.get('/clover/status', async (_req, res) => {
+router.get('/clover/status', auth_2.authMiddleware, async (req, res) => {
+    const user = req.user;
+    // Build location filter based on user role
+    let where = { cloverApiToken: { not: null } };
+    if (user.role === 'ADMIN') {
+        // ADMIN: no filter
+    }
+    else if (user.role === 'MANAGER') {
+        const locationIds = await (0, auth_2.getUserLocationIds)(user.id);
+        where = { ...where, id: { in: locationIds } };
+    }
+    else if (user.organizationId) {
+        where = { ...where, organizationId: user.organizationId };
+    }
+    else {
+        res.status(403).json({ error: 'No organization access' });
+        return;
+    }
     const locations = await client_1.default.location.findMany({
-        where: { cloverApiToken: { not: null } },
+        where,
         select: {
             id: true,
             name: true,
@@ -1013,7 +1137,11 @@ router.get('/clover/status', async (_req, res) => {
         },
     });
     const lastSync = await client_1.default.syncLog.findFirst({
-        where: { status: 'success', source: { startsWith: 'clover' } },
+        where: {
+            status: 'success',
+            source: { startsWith: 'clover' },
+            ...(locations.length > 0 && { locationId: { in: locations.map(l => l.id) } }),
+        },
         orderBy: { timestamp: 'desc' },
     });
     res.json({
@@ -1028,16 +1156,26 @@ router.get('/clover/status', async (_req, res) => {
     });
 });
 // ─── Clover Manual Sync ──────────────────────────────────
-router.post('/clover/sync', async (req, res) => {
+router.post('/clover/sync', auth_2.authMiddleware, async (req, res) => {
+    const user = req.user;
     const { locationId } = req.body;
     try {
         if (locationId) {
+            // Verify user has access to this location
+            if (!(await (0, auth_2.canAccessLocation)(user, locationId))) {
+                res.status(403).json({ error: 'Access denied to this location' });
+                return;
+            }
             const catalogCount = await (0, sync_2.syncCloverCatalog)(locationId);
             const orderCount = await (0, sync_2.syncCloverOrders)(locationId);
             res.json({ success: true, catalogSynced: catalogCount, ordersSynced: orderCount });
         }
         else {
-            // Sync all Clover locations
+            // Sync all Clover locations - only ADMIN
+            if (user.role !== 'ADMIN') {
+                res.status(403).json({ error: 'Admin access required to sync all locations' });
+                return;
+            }
             const locations = await client_1.default.location.findMany({
                 where: { cloverApiToken: { not: null } },
             });
@@ -1054,14 +1192,25 @@ router.post('/clover/sync', async (req, res) => {
     }
 });
 // ─── Clover Analyze ──────────────────────────────────────
-router.post('/clover/analyze', async (req, res) => {
+router.post('/clover/analyze', auth_2.authMiddleware, async (req, res) => {
+    const user = req.user;
     const { locationId } = req.body;
     try {
         if (locationId) {
+            // Verify user has access to this location
+            if (!(await (0, auth_2.canAccessLocation)(user, locationId))) {
+                res.status(403).json({ error: 'Access denied to this location' });
+                return;
+            }
             const result = await (0, engine_1.analyzeLocation)(locationId);
             res.json({ success: true, ...result });
         }
         else {
+            // Analyze all - only ADMIN
+            if (user.role !== 'ADMIN') {
+                res.status(403).json({ error: 'Admin access required to analyze all locations' });
+                return;
+            }
             await (0, engine_1.analyzeAllLocations)();
             res.json({ success: true, message: 'All locations analyzed' });
         }
@@ -1569,7 +1718,7 @@ router.post('/clover/webhooks', async (req, res) => {
     }
 });
 // ─── Clover Merchants (Admin) ───────────────────────────
-router.get('/clover/merchants', async (_req, res) => {
+router.get('/clover/merchants', auth_2.authMiddleware, auth_2.requireAdmin, async (_req, res) => {
     const merchants = await client_1.default.cloverMerchant.findMany({
         orderBy: { installedAt: 'desc' },
     });
@@ -1588,8 +1737,20 @@ router.get('/clover/merchants', async (_req, res) => {
     });
 });
 // ─── Clover Merchant Status ─────────────────────────────
-router.get('/clover/merchants/:merchantId/status', async (req, res) => {
+router.get('/clover/merchants/:merchantId/status', auth_2.authMiddleware, async (req, res) => {
+    const user = req.user;
     const merchantId = paramStr(req.params.merchantId);
+    // Get associated location first to check access
+    const location = await client_1.default.location.findFirst({
+        where: { cloverMerchantId: merchantId },
+    });
+    // If not ADMIN, verify user has access to this location
+    if (user.role !== 'ADMIN') {
+        if (!location || !(await (0, auth_2.canAccessLocation)(user, location.id))) {
+            res.status(403).json({ error: 'Access denied to this merchant' });
+            return;
+        }
+    }
     const merchant = await client_1.default.cloverMerchant.findUnique({
         where: { merchantId },
     });
@@ -1597,10 +1758,6 @@ router.get('/clover/merchants/:merchantId/status', async (req, res) => {
         res.status(404).json({ error: 'Merchant not found' });
         return;
     }
-    // Find associated location
-    const location = await client_1.default.location.findFirst({
-        where: { cloverMerchantId: merchantId },
-    });
     // Get latest sync logs
     const recentSyncs = location
         ? await client_1.default.syncLog.findMany({
@@ -1642,10 +1799,16 @@ router.get('/clover/merchants/:merchantId/status', async (req, res) => {
 });
 // ─── Daily Summary ───────────────────────────────────────
 // POST /api/reports/daily-summary — generate a daily summary for a location
-router.post('/reports/daily-summary', async (req, res) => {
+router.post('/reports/daily-summary', auth_2.authMiddleware, async (req, res) => {
+    const user = req.user;
     const { locationId, date } = req.body;
     if (!locationId) {
         res.status(400).json({ error: 'locationId is required' });
+        return;
+    }
+    // Verify user has access to this location
+    if (!(await (0, auth_2.canAccessLocation)(user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
         return;
     }
     try {
@@ -1711,11 +1874,26 @@ router.get('/alerts/:locationId', auth_2.optionalAuth, async (req, res) => {
     }
 });
 // POST /api/alerts/:id/acknowledge — dismiss an alert
-router.post('/alerts/:id/acknowledge', async (req, res) => {
+router.post('/alerts/:id/acknowledge', auth_2.authMiddleware, async (req, res) => {
+    const user = req.user;
     const alertId = paramStr(req.params.id);
     try {
-        const alert = await (0, alerts_1.acknowledgeAlert)(alertId);
-        res.json({ success: true, alert: { ...alert, data: JSON.parse(alert.data) } });
+        // Get the alert to verify location access
+        const alert = await client_1.default.alert.findUnique({
+            where: { id: alertId },
+            include: { location: true },
+        });
+        if (!alert) {
+            res.status(404).json({ error: 'Alert not found' });
+            return;
+        }
+        // Verify user has access to this location
+        if (!(await (0, auth_2.canAccessLocation)(user, alert.locationId))) {
+            res.status(403).json({ error: 'Access denied to this location' });
+            return;
+        }
+        const acknowledged = await (0, alerts_1.acknowledgeAlert)(alertId);
+        res.json({ success: true, alert: { ...acknowledged, data: JSON.parse(acknowledged.data) } });
     }
     catch (err) {
         logger_1.logger.error('Alerts', 'Failed to acknowledge alert', err);
@@ -1724,7 +1902,8 @@ router.post('/alerts/:id/acknowledge', async (req, res) => {
 });
 // ─── Email Digest ─────────────────────────────────────────
 // POST /api/email/test-digest — send a test daily digest email
-router.post('/email/test-digest', async (req, res) => {
+router.post('/email/test-digest', auth_2.authMiddleware, async (req, res) => {
+    const user = req.user;
     const { to, locationId } = req.body;
     if (!to || typeof to !== 'string') {
         res.status(400).json({ error: 'Missing required field: to (email address)' });
@@ -1734,6 +1913,11 @@ router.post('/email/test-digest', async (req, res) => {
         let summary;
         let locationName;
         if (locationId) {
+            // Verify user has access to this location
+            if (!(await (0, auth_2.canAccessLocation)(user, locationId))) {
+                res.status(403).json({ error: 'Access denied to this location' });
+                return;
+            }
             summary = await (0, daily_summary_1.generateDailySummary)(locationId);
             locationName = summary.locationName;
         }
@@ -1754,6 +1938,8 @@ router.post('/email/test-digest', async (req, res) => {
         res.status(500).json({ error: 'Failed to send test digest', message: err instanceof Error ? err.message : String(err) });
     }
 });
+// ─── Before / After Revenue Dashboard ────────────────────────────
+// GET /api/analytics/before-after/:locationId — revenue lift since install
 // ─── Before / After Revenue Dashboard ────────────────────────────
 // GET /api/analytics/before-after/:locationId — revenue lift since install
 router.get('/analytics/before-after/:locationId', auth_2.optionalAuth, async (req, res) => {
@@ -2188,6 +2374,75 @@ router.get('/dashboard/summary', auth_2.authMiddleware, async (req, res) => {
     catch (err) {
         logger_1.logger.error('Dashboard', 'Failed to build dashboard summary', err);
         res.status(500).json({ error: 'Failed to build dashboard summary', message: err instanceof Error ? err.message : String(err) });
+    }
+});
+// TEMPORARY TEST ENDPOINT - Remove after verification
+router.post('/test/create-user', async (req, res) => {
+    try {
+        const { orgName, userEmail, password, role = 'OWNER' } = req.body;
+        if (!orgName || !userEmail || !password) {
+            res.status(400).json({ error: 'orgName, userEmail, password required' });
+            return;
+        }
+        // Create org
+        const org = await client_1.default.organization.create({
+            data: { name: orgName }
+        });
+        // Create location
+        const location = await client_1.default.location.create({
+            data: {
+                organizationId: org.id,
+                name: `${orgName} Location`,
+                address: '123 Test St',
+                lat: 40.7128,
+                lng: -74.0060,
+                timezone: 'America/New_York'
+            }
+        });
+        // Create user with RUNTIME bcrypt (same as production)
+        const passwordHash = await bcryptjs_1.default.hash(password, 12);
+        const user = await client_1.default.user.create({
+            data: {
+                email: userEmail,
+                passwordHash,
+                name: `Test ${role}`,
+                role,
+                organizationId: org.id,
+                emailVerified: true
+            }
+        });
+        // Create sample menu item
+        await client_1.default.menuItem.create({
+            data: {
+                locationId: location.id,
+                name: `${orgName} Special`,
+                category: 'Specials',
+                price: 12.99,
+                active: true
+            }
+        });
+        // Create sample order
+        await client_1.default.order.create({
+            data: {
+                locationId: location.id,
+                total: 25.98,
+                itemCount: 2,
+                timestamp: new Date()
+            }
+        });
+        res.json({
+            success: true,
+            orgId: org.id,
+            locationId: location.id,
+            userId: user.id,
+            email: userEmail,
+            password: password,
+            message: 'Test user created with runtime bcrypt'
+        });
+    }
+    catch (err) {
+        logger_1.logger.error('Test', 'Failed to create test user', err);
+        res.status(500).json({ error: 'Failed to create test user', details: err instanceof Error ? err.message : String(err) });
     }
 });
 exports.default = router;
