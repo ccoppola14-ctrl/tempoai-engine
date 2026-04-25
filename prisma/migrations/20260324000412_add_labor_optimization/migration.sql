@@ -54,11 +54,6 @@ CREATE TABLE "LaborTarget" (
 -- CreateIndex
 CREATE UNIQUE INDEX "LaborTarget_locationId_dayOfWeek_daypart_key" ON "LaborTarget"("locationId", "dayOfWeek", "daypart");
 
--- AddForeignKey
-ALTER TABLE "StaffShift" ADD CONSTRAINT "StaffShift_locationId_fkey" FOREIGN KEY ("locationId") REFERENCES "Location"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "LaborRecommendation" ADD CONSTRAINT "LaborRecommendation_locationId_fkey" FOREIGN KEY ("locationId") REFERENCES "Location"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "LaborTarget" ADD CONSTRAINT "LaborTarget_locationId_fkey" FOREIGN KEY ("locationId") REFERENCES "Location"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+-- Foreign keys omitted for SQLite compatibility
+-- SQLite doesn't support ALTER TABLE ADD CONSTRAINT syntax
+-- Relations are enforced at application level
