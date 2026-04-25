@@ -2,7 +2,7 @@ import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import prisma from '../../db/client';
 
-const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_SECRET = process.env.JWT_SECRET || '';
 
 if (!JWT_SECRET || JWT_SECRET === 'tempoai-dev-secret') {
   throw new Error('JWT_SECRET environment variable is required and must not be the default value');
@@ -36,12 +36,12 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
 
   const token = header.slice(7);
   try {
-    const payload = jwt.verify(token, JWT_SECRET) as AuthUser;
+    const payload = jwt.verify(token, JWT_SECRET) as { id: string; email: string; role: string; organizationId: string | null };
     req.user = {
       id: payload.id,
       email: payload.email,
       role: payload.role,
-      organizationId: payload.organizationId,
+      organizationId: payload.organizationId ?? null,
     };
     next();
   } catch {

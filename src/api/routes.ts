@@ -273,7 +273,15 @@ router.get('/square/oauth/callback', async (req: Request, res: Response) => {
 });
 
 // GET /square/merchants — list connected Square merchants
-router.get('/square/merchants', async (_req: Request, res: Response) => {
+router.get('/square/merchants', authMiddleware, async (req: Request, res: Response) => {
+  const user = req.user!;
+
+  // Only ADMIN can see all merchants
+  if (user.role !== 'ADMIN') {
+    res.status(403).json({ error: 'Admin access required' });
+    return;
+  }
+
   const merchants = await prisma.squareMerchant.findMany({
     orderBy: { installedAt: 'desc' },
   });
@@ -294,9 +302,11 @@ router.get('/square/merchants', async (_req: Request, res: Response) => {
 });
 
 // GET /square/merchants/:merchantId/status — merchant connection status
-router.get('/square/merchants/:merchantId/status', async (req: Request, res: Response) => {
+router.get('/square/merchants/:merchantId/status', authMiddleware, async (req: Request, res: Response) => {
+  const user = req.user!;
   const merchantId = paramStr(req.params.merchantId);
 
+  // Get the merchant
   const merchant = await prisma.squareMerchant.findUnique({
     where: { merchantId },
   });
@@ -313,6 +323,17 @@ router.get('/square/merchants/:merchantId/status', async (req: Request, res: Res
       _count: { select: { orders: true, menuItems: true, recommendations: true, weatherSnapshots: true } },
     },
   });
+
+  // If not ADMIN, verify user has access to at least one of these locations
+  if (user.role !== 'ADMIN') {
+    const hasAccess = await Promise.all(
+      locations.map(l => canAccessLocation(user, l.id))
+    );
+    if (!hasAccess.some(Boolean)) {
+      res.status(403).json({ error: 'Access denied to this merchant' });
+      return;
+    }
+  }
 
   // Get latest sync logs
   const recentSyncs = locations.length > 0
@@ -571,8 +592,27 @@ router.get('/recommendations/:locationId', optionalAuth, async (req: Request, re
   res.json(recommendations);
 });
 
-router.post('/recommendations/:id/apply', async (req: Request, res: Response) => {
+router.post('/recommendations/:id/apply', authMiddleware, async (req: Request, res: Response) => {
+  const user = req.user!;
   const id = paramStr(req.params.id);
+
+  // Get the recommendation to find its location
+  const rec = await prisma.recommendation.findUnique({
+    where: { id },
+    include: { location: true },
+  });
+
+  if (!rec) {
+    res.status(404).json({ error: 'Recommendation not found' });
+    return;
+  }
+
+  // Verify user has access to this location
+  if (!(await canAccessLocation(user, rec.locationId))) {
+    res.status(403).json({ error: 'Access denied to this location' });
+    return;
+  }
+
   const recommendation = await prisma.recommendation.update({
     where: { id },
     data: { status: 'applied', appliedAt: new Date() },
@@ -728,8 +768,31 @@ router.get('/active-promos/:locationId', optionalAuth, async (req: Request, res:
 });
 
 // ─── Insights ─────────────────────────────────────────────
-router.get('/insights', async (_req: Request, res: Response) => {
+router.get('/insights', authMiddleware, async (req: Request, res: Response) => {
+  const user = req.user!;
+  
+  // Build location filter based on user role
+  let locationIds: string[] | undefined;
+  if (user.role === 'ADMIN') {
+    // ADMIN: no filter - can see all
+  } else if (user.role === 'MANAGER') {
+    locationIds = await getUserLocationIds(user.id);
+  } else if (user.organizationId) {
+    // OWNER: get all locations in their org
+    const orgLocations = await prisma.location.findMany({
+      where: { organizationId: user.organizationId },
+      select: { id: true },
+    });
+    locationIds = orgLocations.map(l => l.id);
+  } else {
+    res.status(403).json({ error: 'No organization access' });
+    return;
+  }
+
+  const where = locationIds ? { locationId: { in: locationIds } } : {};
+
   const patterns = await prisma.aIPattern.findMany({
+    where,
     include: { menuItem: true, location: true },
     orderBy: { liftPercent: 'desc' },
   });
@@ -748,10 +811,25 @@ router.get('/insights', async (_req: Request, res: Response) => {
 });
 
 // ─── Analytics ────────────────────────────────────────────
-router.get('/analytics/revenue', async (req: Request, res: Response) => {
+router.get('/analytics/revenue', authMiddleware, async (req: Request, res: Response) => {
+  const user = req.user!;
   const locationId = req.query.locationId as string | undefined;
   const days = parseInt(req.query.days as string) || 30;
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+  // If specific location requested, verify access
+  if (locationId) {
+    if (!(await canAccessLocation(user, locationId))) {
+      res.status(403).json({ error: 'Access denied to this location' });
+      return;
+    }
+  } else {
+    // No location specified - must be ADMIN to see all
+    if (user.role !== 'ADMIN') {
+      res.status(403).json({ error: 'Admin access required to view all locations' });
+      return;
+    }
+  }
 
   const where = {
     timestamp: { gte: since },
@@ -790,10 +868,25 @@ router.get('/analytics/revenue', async (req: Request, res: Response) => {
   });
 });
 
-router.get('/analytics/items', async (req: Request, res: Response) => {
+router.get('/analytics/items', authMiddleware, async (req: Request, res: Response) => {
+  const user = req.user!;
   const locationId = req.query.locationId as string | undefined;
   const days = parseInt(req.query.days as string) || 30;
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+  // If specific location requested, verify access
+  if (locationId) {
+    if (!(await canAccessLocation(user, locationId))) {
+      res.status(403).json({ error: 'Access denied to this location' });
+      return;
+    }
+  } else {
+    // No location specified - must be ADMIN to see all
+    if (user.role !== 'ADMIN') {
+      res.status(403).json({ error: 'Admin access required to view all locations' });
+      return;
+    }
+  }
 
   const orderItems = await prisma.orderItem.findMany({
     where: {
@@ -834,11 +927,18 @@ router.get('/analytics/items', async (req: Request, res: Response) => {
 });
 
 // ─── Sync ─────────────────────────────────────────────────
-router.post('/sync/trigger', async (req: Request, res: Response) => {
+router.post('/sync/trigger', authMiddleware, async (req: Request, res: Response) => {
+  const user = req.user!;
   const { locationId } = req.body as { locationId?: string };
 
   try {
     if (locationId) {
+      // Verify user has access to this location
+      if (!(await canAccessLocation(user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+      }
+
       const catalogCount = await syncLocationCatalog(locationId);
       const orderCount = await syncLocationOrders(locationId);
       const analysis = await analyzeLocation(locationId);
@@ -850,6 +950,12 @@ router.post('/sync/trigger', async (req: Request, res: Response) => {
         ...analysis,
       });
     } else {
+      // No location specified - only ADMIN can sync all
+      if (user.role !== 'ADMIN') {
+        res.status(403).json({ error: 'Admin access required to sync all locations' });
+        return;
+      }
+
       await syncAllLocations();
       await analyzeAllLocations();
       res.json({ success: true, message: 'All locations synced and analyzed' });
@@ -861,14 +967,27 @@ router.post('/sync/trigger', async (req: Request, res: Response) => {
 });
 
 // ─── AI Analysis trigger ──────────────────────────────────
-router.post('/analyze', async (req: Request, res: Response) => {
+router.post('/analyze', authMiddleware, async (req: Request, res: Response) => {
+  const user = req.user!;
   const { locationId } = req.body as { locationId?: string };
 
   try {
     if (locationId) {
+      // Verify user has access to this location
+      if (!(await canAccessLocation(user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+      }
+
       const result = await analyzeLocation(locationId);
       res.json({ success: true, ...result });
     } else {
+      // No location specified - only ADMIN can analyze all
+      if (user.role !== 'ADMIN') {
+        res.status(403).json({ error: 'Admin access required to analyze all locations' });
+        return;
+      }
+
       await analyzeAllLocations();
       res.json({ success: true, message: 'All locations analyzed' });
     }
@@ -879,7 +998,8 @@ router.post('/analyze', async (req: Request, res: Response) => {
 });
 
 // ─── Square Onboarding ───────────────────────────────────
-router.post('/onboard/square', async (req: Request, res: Response) => {
+router.post('/onboard/square', authMiddleware, async (req: Request, res: Response) => {
+  const user = req.user!;
   const { accessToken, locationId } = req.body as {
     accessToken?: string;
     locationId?: string;
@@ -900,7 +1020,7 @@ router.post('/onboard/square', async (req: Request, res: Response) => {
       return;
     }
 
-    // Find or create organization scoped to THIS merchant (Fix 2)
+    // Find or create organization scoped to THIS merchant
     let location = await prisma.location.findFirst({
       where: { squareMerchantId: locationId },
     });
@@ -1122,9 +1242,26 @@ router.post('/onboard/clover', async (req: Request, res: Response) => {
 });
 
 // ─── Clover Status ───────────────────────────────────────
-router.get('/clover/status', async (_req: Request, res: Response) => {
+router.get('/clover/status', authMiddleware, async (req: Request, res: Response) => {
+  const user = req.user!;
+
+  // Build location filter based on user role
+  let where: any = { cloverApiToken: { not: null } };
+  
+  if (user.role === 'ADMIN') {
+    // ADMIN: no filter
+  } else if (user.role === 'MANAGER') {
+    const locationIds = await getUserLocationIds(user.id);
+    where = { ...where, id: { in: locationIds } };
+  } else if (user.organizationId) {
+    where = { ...where, organizationId: user.organizationId };
+  } else {
+    res.status(403).json({ error: 'No organization access' });
+    return;
+  }
+
   const locations = await prisma.location.findMany({
-    where: { cloverApiToken: { not: null } },
+    where,
     select: {
       id: true,
       name: true,
@@ -1133,7 +1270,11 @@ router.get('/clover/status', async (_req: Request, res: Response) => {
   });
 
   const lastSync = await prisma.syncLog.findFirst({
-    where: { status: 'success', source: { startsWith: 'clover' } },
+    where: { 
+      status: 'success', 
+      source: { startsWith: 'clover' },
+      ...(locations.length > 0 && { locationId: { in: locations.map(l => l.id) } }),
+    },
     orderBy: { timestamp: 'desc' },
   });
 
@@ -1150,16 +1291,28 @@ router.get('/clover/status', async (_req: Request, res: Response) => {
 });
 
 // ─── Clover Manual Sync ──────────────────────────────────
-router.post('/clover/sync', async (req: Request, res: Response) => {
+router.post('/clover/sync', authMiddleware, async (req: Request, res: Response) => {
+  const user = req.user!;
   const { locationId } = req.body as { locationId?: string };
 
   try {
     if (locationId) {
+      // Verify user has access to this location
+      if (!(await canAccessLocation(user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+      }
+
       const catalogCount = await syncCloverCatalog(locationId);
       const orderCount = await syncCloverOrders(locationId);
       res.json({ success: true, catalogSynced: catalogCount, ordersSynced: orderCount });
     } else {
-      // Sync all Clover locations
+      // Sync all Clover locations - only ADMIN
+      if (user.role !== 'ADMIN') {
+        res.status(403).json({ error: 'Admin access required to sync all locations' });
+        return;
+      }
+
       const locations = await prisma.location.findMany({
         where: { cloverApiToken: { not: null } },
       });
@@ -1176,14 +1329,27 @@ router.post('/clover/sync', async (req: Request, res: Response) => {
 });
 
 // ─── Clover Analyze ──────────────────────────────────────
-router.post('/clover/analyze', async (req: Request, res: Response) => {
+router.post('/clover/analyze', authMiddleware, async (req: Request, res: Response) => {
+  const user = req.user!;
   const { locationId } = req.body as { locationId?: string };
 
   try {
     if (locationId) {
+      // Verify user has access to this location
+      if (!(await canAccessLocation(user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+      }
+
       const result = await analyzeLocation(locationId);
       res.json({ success: true, ...result });
     } else {
+      // Analyze all - only ADMIN
+      if (user.role !== 'ADMIN') {
+        res.status(403).json({ error: 'Admin access required to analyze all locations' });
+        return;
+      }
+
       await analyzeAllLocations();
       res.json({ success: true, message: 'All locations analyzed' });
     }
@@ -1761,7 +1927,7 @@ router.post('/clover/webhooks', async (req: Request, res: Response) => {
 });
 
 // ─── Clover Merchants (Admin) ───────────────────────────
-router.get('/clover/merchants', async (_req: Request, res: Response) => {
+router.get('/clover/merchants', authMiddleware, requireAdmin, async (_req: Request, res: Response) => {
   const merchants = await prisma.cloverMerchant.findMany({
     orderBy: { installedAt: 'desc' },
   });
@@ -1782,8 +1948,22 @@ router.get('/clover/merchants', async (_req: Request, res: Response) => {
 });
 
 // ─── Clover Merchant Status ─────────────────────────────
-router.get('/clover/merchants/:merchantId/status', async (req: Request, res: Response) => {
+router.get('/clover/merchants/:merchantId/status', authMiddleware, async (req: Request, res: Response) => {
+  const user = req.user!;
   const merchantId = paramStr(req.params.merchantId);
+
+  // Get associated location first to check access
+  const location = await prisma.location.findFirst({
+    where: { cloverMerchantId: merchantId },
+  });
+
+  // If not ADMIN, verify user has access to this location
+  if (user.role !== 'ADMIN') {
+    if (!location || !(await canAccessLocation(user, location.id))) {
+      res.status(403).json({ error: 'Access denied to this merchant' });
+      return;
+    }
+  }
 
   const merchant = await prisma.cloverMerchant.findUnique({
     where: { merchantId },
@@ -1793,11 +1973,6 @@ router.get('/clover/merchants/:merchantId/status', async (req: Request, res: Res
     res.status(404).json({ error: 'Merchant not found' });
     return;
   }
-
-  // Find associated location
-  const location = await prisma.location.findFirst({
-    where: { cloverMerchantId: merchantId },
-  });
 
   // Get latest sync logs
   const recentSyncs = location
@@ -1843,10 +2018,17 @@ router.get('/clover/merchants/:merchantId/status', async (req: Request, res: Res
 
 // ─── Daily Summary ───────────────────────────────────────
 // POST /api/reports/daily-summary — generate a daily summary for a location
-router.post('/reports/daily-summary', async (req: Request, res: Response) => {
+router.post('/reports/daily-summary', authMiddleware, async (req: Request, res: Response) => {
+  const user = req.user!;
   const { locationId, date } = req.body as { locationId?: string; date?: string };
   if (!locationId) {
     res.status(400).json({ error: 'locationId is required' });
+    return;
+  }
+
+  // Verify user has access to this location
+  if (!(await canAccessLocation(user, locationId))) {
+    res.status(403).json({ error: 'Access denied to this location' });
     return;
   }
 
@@ -1920,12 +2102,30 @@ router.get('/alerts/:locationId', optionalAuth, async (req: Request, res: Respon
 });
 
 // POST /api/alerts/:id/acknowledge — dismiss an alert
-router.post('/alerts/:id/acknowledge', async (req: Request, res: Response) => {
+router.post('/alerts/:id/acknowledge', authMiddleware, async (req: Request, res: Response) => {
+  const user = req.user!;
   const alertId = paramStr(req.params.id);
 
   try {
-    const alert = await acknowledgeAlert(alertId);
-    res.json({ success: true, alert: { ...alert, data: JSON.parse(alert.data) } });
+    // Get the alert to verify location access
+    const alert = await prisma.alert.findUnique({
+      where: { id: alertId },
+      include: { location: true },
+    });
+
+    if (!alert) {
+      res.status(404).json({ error: 'Alert not found' });
+      return;
+    }
+
+    // Verify user has access to this location
+    if (!(await canAccessLocation(user, alert.locationId))) {
+      res.status(403).json({ error: 'Access denied to this location' });
+      return;
+    }
+
+    const acknowledged = await acknowledgeAlert(alertId);
+    res.json({ success: true, alert: { ...acknowledged, data: JSON.parse(acknowledged.data) } });
   } catch (err) {
     logger.error('Alerts', 'Failed to acknowledge alert', err);
     res.status(500).json({ error: 'Failed to acknowledge alert', message: err instanceof Error ? err.message : String(err) });
@@ -1934,7 +2134,8 @@ router.post('/alerts/:id/acknowledge', async (req: Request, res: Response) => {
 
 // ─── Email Digest ─────────────────────────────────────────
 // POST /api/email/test-digest — send a test daily digest email
-router.post('/email/test-digest', async (req: Request, res: Response) => {
+router.post('/email/test-digest', authMiddleware, async (req: Request, res: Response) => {
+  const user = req.user!;
   const { to, locationId } = req.body;
 
   if (!to || typeof to !== 'string') {
@@ -1947,6 +2148,11 @@ router.post('/email/test-digest', async (req: Request, res: Response) => {
     let locationName: string;
 
     if (locationId) {
+      // Verify user has access to this location
+      if (!(await canAccessLocation(user, locationId))) {
+        res.status(403).json({ error: 'Access denied to this location' });
+        return;
+      }
       summary = await generateDailySummary(locationId);
       locationName = summary.locationName;
     } else {
@@ -1966,6 +2172,10 @@ router.post('/email/test-digest', async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Failed to send test digest', message: err instanceof Error ? err.message : String(err) });
   }
 });
+
+// ─── Before / After Revenue Dashboard ────────────────────────────
+
+// GET /api/analytics/before-after/:locationId — revenue lift since install
 
 // ─── Before / After Revenue Dashboard ────────────────────────────
 
@@ -2445,6 +2655,82 @@ router.get('/dashboard/summary', authMiddleware, async (req: Request, res: Respo
   } catch (err) {
     logger.error('Dashboard', 'Failed to build dashboard summary', err);
     res.status(500).json({ error: 'Failed to build dashboard summary', message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// TEMPORARY TEST ENDPOINT - Remove after verification
+router.post('/test/create-user', async (req: Request, res: Response) => {
+  try {
+    const { orgName, userEmail, password, role = 'OWNER' } = req.body;
+    
+    if (!orgName || !userEmail || !password) {
+      res.status(400).json({ error: 'orgName, userEmail, password required' });
+      return;
+    }
+    
+    // Create org
+    const org = await prisma.organization.create({
+      data: { name: orgName }
+    });
+    
+    // Create location
+    const location = await prisma.location.create({
+      data: {
+        organizationId: org.id,
+        name: `${orgName} Location`,
+        address: '123 Test St',
+        lat: 40.7128,
+        lng: -74.0060,
+        timezone: 'America/New_York'
+      }
+    });
+    
+    // Create user with RUNTIME bcrypt (same as production)
+    const passwordHash = await bcrypt.hash(password, 12);
+    const user = await prisma.user.create({
+      data: {
+        email: userEmail,
+        passwordHash,
+        name: `Test ${role}`,
+        role,
+        organizationId: org.id,
+        emailVerified: true
+      }
+    });
+    
+    // Create sample menu item
+    await prisma.menuItem.create({
+      data: {
+        locationId: location.id,
+        name: `${orgName} Special`,
+        category: 'Specials',
+        price: 12.99,
+        active: true
+      }
+    });
+    
+    // Create sample order
+    await prisma.order.create({
+      data: {
+        locationId: location.id,
+        total: 25.98,
+        itemCount: 2,
+        timestamp: new Date()
+      }
+    });
+    
+    res.json({
+      success: true,
+      orgId: org.id,
+      locationId: location.id,
+      userId: user.id,
+      email: userEmail,
+      password: password,
+      message: 'Test user created with runtime bcrypt'
+    });
+  } catch (err) {
+    logger.error('Test', 'Failed to create test user', err);
+    res.status(500).json({ error: 'Failed to create test user', details: err instanceof Error ? err.message : String(err) });
   }
 });
 
