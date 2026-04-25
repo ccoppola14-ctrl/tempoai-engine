@@ -1,5 +1,5 @@
--- Add MANAGER to UserRole enum
-ALTER TYPE "UserRole" ADD VALUE IF NOT EXISTS 'MANAGER';
+-- Note: MANAGER enum value already in schema (SQLite enums are strings)
+-- Skipped: ALTER TYPE not supported in SQLite
 
 -- CreateTable
 CREATE TABLE "UserLocation" (
@@ -14,8 +14,4 @@ CREATE TABLE "UserLocation" (
 -- CreateIndex
 CREATE UNIQUE INDEX "UserLocation_userId_locationId_key" ON "UserLocation"("userId", "locationId");
 
--- AddForeignKey
-ALTER TABLE "UserLocation" ADD CONSTRAINT "UserLocation_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "UserLocation" ADD CONSTRAINT "UserLocation_locationId_fkey" FOREIGN KEY ("locationId") REFERENCES "Location"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- Foreign keys omitted for SQLite compatibility
